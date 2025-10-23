@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>실내 지도 에디터 (로컬 JS + A안 서버 테스트)</title>
+  <link rel="stylesheet" href="https://unpkg.com/modern-normalize/modern-normalize.css">
+  <style>
+    :root{--g50:#f8fafc;--g100:#f1f5f9;--g200:#e2e8f0;--g300:#cbd5e1;--g500:#64748b;--g900:#0f172a;--b600:#2563eb}
+    *{box-sizing:border-box} html,body{height:100%;margin:0;background:var(--g50);color:var(--g900);font-family:system-ui,-apple-system,Segoe UI,Roboto,Pretendard,Arial,sans-serif}
+    .top{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--g200);background:#fff}
+    .grid{height:calc(100vh - 52px);display:grid;grid-template-columns:320px 1fr 300px}
+    .panel{background:#fff;border-right:1px solid var(--g200);overflow:auto;padding:12px}
+    .panel-right{border-left:1px solid var(--g200);border-right:none}
+    .section{margin-bottom:16px}
+    .section>h3{margin:0 0 8px;font-size:14px;font-weight:700;color:#475569}
+    .card{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:12px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .btn{border:1px solid var(--g300);background:#fff;padding:6px 10px;border-radius:8px;font-size:14px;cursor:pointer}
+    .btn.primary{background:var(--b600);border-color:var(--b600);color:#fff}
+    .btn.dark{background:var(--g900);border-color:var(--g900);color:#fff}
+    .row{display:flex;gap:8px;align-items:center} .row + .row{margin-top:8px}
+    .input, select{border:1px solid var(--g300);border-radius:8px;padding:6px 8px;font-size:14px;width:100%}
+    .muted{font-size:12px;color:var(--g500)}
+    .canvas-wrap{position:relative;background:#f3f4f6}
+    canvas{width:100%;height:100%;display:block;outline:none}
+    .toolgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+    .toolbtn{border:1px solid var(--g300);border-radius:8px;padding:8px;cursor:pointer;text-align:center;background:#fff;font-size:14px}
+    .toolbtn.active{background:var(--g900);color:#fff;border-color:var(--g900)}
+    .badge{font-size:12px;padding:2px 8px;border:1px solid var(--g300);border-radius:999px;background:var(--g100)}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="row">
+      <strong>실내 지도 에디터 (Local JS)</strong>
+      <span class="badge" id="scaleBadge">m/pixel: 0.33167</span>
+    </div>
+    <div class="row">
+      <button class="btn dark" id="btnNew">새 프로젝트</button>
+      <label class="btn">불러오기<input type="file" id="importFile" accept="application/json" style="display:none"></label>
+      <input class="input" style="width:180px" id="fileName" value="project.json">
+      <button class="btn primary" id="btnExport">저장/내보내기</button>
+      <span class="muted" id="saveState" style="margin-left:8px">저장됨</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Left -->
+    <div class="panel">
+      <div class="section">
+        <h3>도구</h3>
+        <div class="card toolgrid" id="toolGrid"></div>
+        <div class="muted" style="margin-top:8px">우클릭/휠버튼: 팬 • 휠: 줌 • 더블클릭: 뷰 리셋</div>
+      </div>
+
+      <div class="section">
+        <h3>층</h3>
+        <div class="card">
+          <div class="row">
+            <label>현재층</label>
+            <select id="floorSelect" class="input"></select>
+          </div>
+          <div class="row">
+            <label class="btn">배경 이미지 로드
+              <input type="file" id="bgLoader" accept="image/*" style="display:none">
+            </label>
+            <button class="btn" id="bgClear">제거</button>
+          </div>
+          <div class="row">
+            <input type="checkbox" id="lockBg">
+            <label for="lockBg" class="muted">이미지 고정(팬 제한)</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>속성</h3>
+        <div class="card">
+          <div class="row">
+            <span class="muted" style="width:80px">시작점 X</span>
+            <input class="input" id="startX" />
+          </div>
+          <div class="row">
+            <span class="muted" style="width:80px">시작점 Y</span>
+            <input class="input" id="startY" />
+          </div>
+          <div class="row"><button class="btn dark" id="btnPickStart">시작점 찍기</button></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>서버(A안) 테스트</h3>
+        <div class="card">
+          <div class="row">
+            <button class="btn primary" id="btnSaveServer">서버에 저장(임시)</button>
+            <input class="input" id="serverProjectId" placeholder="project id" style="width:120px">
+            <button class="btn" id="btnLoadServer">서버에서 불러오기</button>
+          </div>
+          <div class="muted" style="margin-top:6px">⚠️ A안은 서버 재시작하면 데이터가 초기화됨(메모리 저장).</div>
+        </div>
+      </div>
+
+      <div class="section"><h3>단축키</h3><div class="card"><span class="muted">V0 버전: 추후 추가</span></div></div>
+    </div>
+
+    <!-- Center -->
+    <div class="canvas-wrap">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <!-- Right -->
+    <div class="panel panel-right">
+      <div class="section">
+        <h3>현재 층 정보</h3>
+        <div class="card" id="curStats"></div>
+      </div>
+      <div class="section">
+        <h3>전체 정보</h3>
+        <div class="card" id="totalStats"></div>
+      </div>
+      <div class="section">
+        <h3>프로젝트</h3>
+        <div class="card">
+          <div class="row"><span class="muted" style="width:80px">이름</span><input class="input" id="projName"></div>
+          <div class="row"><span class="muted" style="width:80px">상태</span><span id="stateText" class="muted">저장됨</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
