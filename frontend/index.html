@@ -1,133 +1,477 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>실내 지도 에디터 (로컬 JS + A안 서버 테스트)</title>
-  <link rel="stylesheet" href="https://unpkg.com/modern-normalize/modern-normalize.css">
-  <style>
-    :root{--g50:#f8fafc;--g100:#f1f5f9;--g200:#e2e8f0;--g300:#cbd5e1;--g500:#64748b;--g900:#0f172a;--b600:#2563eb}
-    *{box-sizing:border-box} html,body{height:100%;margin:0;background:var(--g50);color:var(--g900);font-family:system-ui,-apple-system,Segoe UI,Roboto,Pretendard,Arial,sans-serif}
-    .top{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--g200);background:#fff}
-    .grid{height:calc(100vh - 52px);display:grid;grid-template-columns:320px 1fr 300px}
-    .panel{background:#fff;border-right:1px solid var(--g200);overflow:auto;padding:12px}
-    .panel-right{border-left:1px solid var(--g200);border-right:none}
-    .section{margin-bottom:16px}
-    .section>h3{margin:0 0 8px;font-size:14px;font-weight:700;color:#475569}
-    .card{background:#fff;border:1px solid var(--g200);border-radius:12px;padding:12px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-    .btn{border:1px solid var(--g300);background:#fff;padding:6px 10px;border-radius:8px;font-size:14px;cursor:pointer}
-    .btn.primary{background:var(--b600);border-color:var(--b600);color:#fff}
-    .btn.dark{background:var(--g900);border-color:var(--g900);color:#fff}
-    .row{display:flex;gap:8px;align-items:center} .row + .row{margin-top:8px}
-    .input, select{border:1px solid var(--g300);border-radius:8px;padding:6px 8px;font-size:14px;width:100%}
-    .muted{font-size:12px;color:var(--g500)}
-    .canvas-wrap{position:relative;background:#f3f4f6}
-    canvas{width:100%;height:100%;display:block;outline:none}
-    .toolgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-    .toolbtn{border:1px solid var(--g300);border-radius:8px;padding:8px;cursor:pointer;text-align:center;background:#fff;font-size:14px}
-    .toolbtn.active{background:var(--g900);color:#fff;border-color:var(--g900)}
-    .badge{font-size:12px;padding:2px 8px;border:1px solid var(--g300);border-radius:999px;background:var(--g100)}
-  </style>
-</head>
-<body>
-  <div class="top">
-    <div class="row">
-      <strong>실내 지도 에디터 (Local JS)</strong>
-      <span class="badge" id="scaleBadge">m/pixel: 0.33167</span>
-    </div>
-    <div class="row">
-      <button class="btn dark" id="btnNew">새 프로젝트</button>
-      <label class="btn">불러오기<input type="file" id="importFile" accept="application/json" style="display:none"></label>
-      <input class="input" style="width:180px" id="fileName" value="project.json">
-      <button class="btn primary" id="btnExport">저장/내보내기</button>
-      <span class="muted" id="saveState" style="margin-left:8px">저장됨</span>
-    </div>
-  </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>실내 지도 에디터 (웹)</title>
+    <style>
+      :root {
+        --bg: #f5f6f8;
+        --panel: #fff;
+        --line: #e9ecef;
+        --muted: #6c757d;
+        --accent: #2d6cdf;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        font-family: Pretendard, system-ui, -apple-system, Segoe UI, Roboto,
+          Apple SD Gothic Neo, Noto Sans KR, sans-serif;
+        color: #222;
+      }
+      .topbar {
+        height: 52px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+        background: #fff;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      .btn {
+        height: 32px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .wrap {
+        display: grid;
+        grid-template-columns: 320px 1fr 280px;
+        gap: 12px;
+        padding: 12px;
+        height: calc(100vh - 48px);
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+      }
+      .left,
+      .right {
+        padding: 12px;
+        overflow: auto;
+      }
+      .group {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-bottom: 12px;
+      }
+      .group > h3 {
+        margin: 0;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        font-size: 14px;
+      }
+      .group .inner {
+        padding: 10px 12px;
+      }
+      .stack8 > * {
+        margin-top: 8px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .row > label {
+        min-width: 64px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      select,
+      input[type="number"],
+      input[type="text"] {
+        height: 32px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 8px;
+        background: #fff;
+        flex: 1;
+      }
+      .toolbtn {
+        width: 100%;
+        height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        cursor: pointer;
+      }
+      .toolbtn.active {
+        border-color: var(--accent);
+        background: #eef4ff;
+        color: var(--accent);
+      }
+      .btn[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .center {
+        position: relative;
+        overflow: hidden;
+      }
+      #canvas {
+        position: relative;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+      }
+      #bgImg {
+        max-width: 100%;
+        max-height: 100%;
+        display: none;
+        /* z-index: 1; */
+      }
+      #overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        /* z-index: 2; */
+        pointer-events: auto;
+      }
+      .selected-node {
+        stroke: #007bff; /* 파란색 */
+        stroke-width: 3px; /* 테두리 두께 */
+        r: 7; /* 점 크기 (SVG circle일 경우) */
+      }
+      .node-dot {
+        cursor: pointer;
+      }
+      .node-dot.selected {
+        stroke: #e11d48;
+        stroke-width: 2;
+      }
+      .link-line {
+        stroke: #2563eb;
+        stroke-width: 2;
+      }
+      .link-line.selected {
+        stroke: #e11d48;
+        stroke-width: 3;
+      }
+      .empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+      }
+      .empty .bubble {
+        background: #e3e3e3;
+        border: 1px dashed var(--line);
+        border-radius: 14px;
+        padding: 22px 28px;
+        color: #000;
+      }
+      .statusbar {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        font-size: 12px;
+        color: #333;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 4px 8px;
+      }
+      /* modal */
+      .modal-back {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.4);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+      }
+      .modal {
+        width: min(900px, 96vw);
+        max-height: 90vh;
+        overflow: auto;
+        background: #fff;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+      }
+      .modal header {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .modal .body {
+        padding: 14px 16px;
+      }
+      .floor-grid {
+        display: grid;
+        grid-template-columns: 80px 1fr auto auto;
+        gap: 8px;
+        align-items: center;
+      }
+      .pill {
+        font-size: 12px;
+        padding: 2px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: #555;
+        background: #fafafa;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .hidden {
+        display: none;
+      }
 
-  <div class="grid">
-    <!-- Left -->
-    <div class="panel">
-      <div class="section">
-        <h3>도구</h3>
-        <div class="card toolgrid" id="toolGrid"></div>
-        <div class="muted" style="margin-top:8px">우클릭/휠버튼: 팬 • 휠: 줌 • 더블클릭: 뷰 리셋</div>
-      </div>
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 상단 바 -->
+    <div class="topbar">
+      <button class="btn primary" id="btnNew">새로 만들기</button>
+      <button class="btn" id="btnOpen" disabled>열기</button>
+      <button class="btn" id="btnSave" disabled>저장</button>
+      <div style="flex: 1"></div>
+      <span class="muted" id="zoomLbl">🔍 100%</span>
+      <span class="muted" id="floorLbl" style="margin-left: 8px">🏢 층: -</span>
+      <span class="muted" id="selLbl" style="margin-left: 8px"
+        >👆 선택: 없음</span
+      >
+    </div>
 
-      <div class="section">
-        <h3>층</h3>
-        <div class="card">
-          <div class="row">
-            <label>현재층</label>
-            <select id="floorSelect" class="input"></select>
+    <!-- 3분할 레이아웃 -->
+    <div class="wrap">
+      <!-- 좌측 패널 -->
+      <div class="left card">
+        <div class="group">
+          <h3>🛠️ 도구</h3>
+          <div class="inner stack8">
+            <button class="toolbtn" data-tool="select">👆 선택 (V)</button>
+            <button class="toolbtn" data-tool="node">🔵 노드 (N)</button>
+            <button class="toolbtn" data-tool="link">🔗 링크 (L)</button>
+            <button class="toolbtn" data-tool="arrow">➡️ 화살표 (A)</button>
+            <button class="toolbtn" data-tool="polygon">📐 폴리곤 (P)</button>
+            <button class="toolbtn" id="btnMove">🖱️ 노드 이동</button>
           </div>
-          <div class="row">
-            <label class="btn">배경 이미지 로드
-              <input type="file" id="bgLoader" accept="image/*" style="display:none">
-            </label>
-            <button class="btn" id="bgClear">제거</button>
+        </div>
+
+        <div class="group">
+          <h3>🏢 층</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>현재 층</label
+              ><select id="floorSelect" disabled></select>
+            </div>
+            <div class="row">
+              <label>배경 이미지</label
+              ><span class="pill" id="bgName">이미지 없음</span>
+            </div>
+            <div class="row">
+              <button class="btn" id="btnLoadBg" disabled>📁 로드</button>
+              <button class="btn" id="btnClearBg" disabled>🗑️ 제거</button>
+            </div>
+            <button class="btn" id="btnLock" disabled>🔒 이미지 고정</button>
           </div>
-          <div class="row">
-            <input type="checkbox" id="lockBg">
-            <label for="lockBg" class="muted">이미지 고정(팬 제한)</label>
+        </div>
+
+        <div class="group">
+          <h3>⚙️ 속성</h3>
+          <div class="inner stack8">
+            <div class="muted">📍 시작점</div>
+            <div class="row">
+              <label>X</label
+              ><input id="startX" type="number" step="0.1" disabled />
+            </div>
+            <div class="row">
+              <label>Y</label
+              ><input id="startY" type="number" step="0.1" disabled />
+            </div>
+            <button class="btn" id="btnPickStart" disabled>
+              📍 시작점 찍기
+            </button>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>⌨️ 단축키</h3>
+          <div class="inner">
+            <div class="muted">
+              Ctrl+Z 실행 취소 · Ctrl+Y 다시 실행 · Delete 삭제 · Ctrl+휠 줌
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="section">
-        <h3>속성</h3>
-        <div class="card">
-          <div class="row">
-            <span class="muted" style="width:80px">시작점 X</span>
-            <input class="input" id="startX" />
+      <!-- 중앙 캔버스 -->
+      <div class="center">
+        <div id="canvas" class="card">
+          <img id="bgImg" alt="floor plan" />
+          <div class="statusbar" id="status">
+            새 프로젝트를 생성하거나 기존 프로젝트를 열어주세요.
           </div>
-          <div class="row">
-            <span class="muted" style="width:80px">시작점 Y</span>
-            <input class="input" id="startY" />
+          <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="empty" id="emptyState">
+          <div class="bubble">
+            새 프로젝트를 생성하거나 기존 프로젝트를 열어주세요<br /><span
+              class="muted"
+              >파일 메뉴에서 ‘새로 만들기’ 또는 ‘열기’를 선택하세요</span
+            >
           </div>
-          <div class="row"><button class="btn dark" id="btnPickStart">시작점 찍기</button></div>
         </div>
       </div>
 
-      <div class="section">
-        <h3>서버(A안) 테스트</h3>
-        <div class="card">
-          <div class="row">
-            <button class="btn primary" id="btnSaveServer">서버에 저장(임시)</button>
-            <input class="input" id="serverProjectId" placeholder="project id" style="width:120px">
-            <button class="btn" id="btnLoadServer">서버에서 불러오기</button>
+      <!-- 우측 패널 -->
+      <div class="right card">
+        <div class="group">
+          <h3>📊 현재 층 정보</h3>
+          <div class="inner" id="layerInfo" class="stack8">
+            🔵 노드: 0<br />🔗 링크: 0<br />➡️ 화살표: 0<br />📐 폴리곤: 0
           </div>
-          <div class="muted" style="margin-top:6px">⚠️ A안은 서버 재시작하면 데이터가 초기화됨(메모리 저장).</div>
+        </div>
+        <div class="group">
+          <h3>📈 전체 정보</h3>
+          <div class="inner" id="totalInfo">
+            🔵 노드: 0<br />🔗 링크: 0<br />➡️ 화살표: 0<br />📐 폴리곤: 0
+          </div>
+        </div>
+        <div class="group">
+          <h3>📁 프로젝트</h3>
+          <div class="inner">
+            <div id="projName">이름: 새 프로젝트</div>
+            <div id="projState" style="color: #27ae60">상태: 저장됨</div>
+          </div>
+        </div>
+
+        <div class="group" id="nodeGroup" style="display: none">
+          <h3>🔵 노드 속성</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>ID</label><input id="nodeId" type="text" readonly />
+            </div>
+            <div class="row">
+              <label>Name</label><input id="nodeName" type="text" />
+            </div>
+            <div class="row">
+              <label>X</label><input id="nodeX" type="number" step="1" />
+            </div>
+            <div class="row">
+              <label>Y</label><input id="nodeY" type="number" step="1" />
+            </div>
+          </div>
+        </div>
+
+        <div class="group" id="linkGroup" style="display: none">
+          <h3>🔗 링크 속성</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>ID</label><input id="linkId" type="text" readonly />
+            </div>
+            <div class="row">
+              <label>From</label
+              ><select id="linkFrom"></select>
+            </div>
+            <div class="row">
+              <label>To</label
+              ><select id="linkTo"></select>
+            </div>
+            <div class="row">
+              <label>타입</label>
+              <select id="linkType">
+                <option value="일반">일반</option>
+                <option value="계단">계단</option>
+                <option value="엘리베이터">엘리베이터</option>
+                <option value="에스컬레이터">에스컬레이터</option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>
-
-      <div class="section"><h3>단축키</h3><div class="card"><span class="muted">V0 버전: 추후 추가</span></div></div>
     </div>
 
-    <!-- Center -->
-    <div class="canvas-wrap">
-      <canvas id="canvas"></canvas>
-    </div>
+    <!-- 새 프로젝트 모달 -->
+    <div class="modal-back" id="newModalBack" role="dialog" aria-modal="true">
+      <div class="modal" role="document">
+        <header>
+          <strong>새 프로젝트 설정</strong>
+          <button class="btn" id="closeModal">닫기</button>
+        </header>
+        <div class="body">
+          <!-- <div class="group">
+            <h3>프로젝트 모드</h3>
+            <div class="inner row">
+              <select id="mode">
+                <option value="monte">Montecarlo (기존 시스템)</option>
+                <option value="markov">Markov (중앙선 기반)</option>
+              </select>
+              <span class="muted">※ V0는 Montecarlo 권장</span>
+            </div>
+          </div> -->
 
-    <!-- Right -->
-    <div class="panel panel-right">
-      <div class="section">
-        <h3>현재 층 정보</h3>
-        <div class="card" id="curStats"></div>
-      </div>
-      <div class="section">
-        <h3>전체 정보</h3>
-        <div class="card" id="totalStats"></div>
-      </div>
-      <div class="section">
-        <h3>프로젝트</h3>
-        <div class="card">
-          <div class="row"><span class="muted" style="width:80px">이름</span><input class="input" id="projName"></div>
-          <div class="row"><span class="muted" style="width:80px">상태</span><span id="stateText" class="muted">저장됨</span></div>
+          <div class="group">
+            <h3>기본 설정</h3>
+            <div class="inner stack8">
+              <div class="row">
+                <label>층 수</label
+                ><input
+                  id="floorCount"
+                  type="number"
+                  min="1"
+                  max="12"
+                  value="4"
+                />
+              </div>
+              <div class="row">
+                <label>시작 층</label
+                ><select id="startFloor"></select>
+              </div>
+              <div class="row">
+                <label>스케일</label
+                ><input id="scale" type="text" value="0.33167" />
+                <span class="muted">m/pixel</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="group">
+            <h3>층별 배경 이미지</h3>
+            <div class="inner" id="floorFiles" class="stack8"></div>
+          </div>
+
+          <div class="row" style="justify-content: flex-end; gap: 8px">
+            <button class="btn" id="btnModalReset">초기화</button>
+            <button class="btn primary" id="btnModalOk">확인</button>
+          </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <script src="./app.js"></script>
-</body>
+    <script src="./app.js" defer></script>
+  </body>
 </html>
