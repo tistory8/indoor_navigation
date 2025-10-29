@@ -131,15 +131,26 @@
         border: 1px solid var(--line);
         border-radius: 14px;
       }
+      #stage {
+        position: absolute; /* 캔버스 기준으로 직접 위치/변환 */
+        left: 0;
+        top: 0;
+        transform-origin: 0 0;
+        will-change: transform;
+        touch-action: none; /* 터치 핀치/팬 커스텀 제스처용 */
+      }
       #bgImg {
         max-width: 100%;
         max-height: 100%;
-        display: none;
+        display: block;
+        pointer-events: none;
       }
       #overlay {
         position: absolute;
+        left: 0; top: 0;
         pointer-events: auto;
       }
+
       .selected-node {
         stroke: #007bff; /* 파란색 */
         stroke-width: 3px; /* 테두리 두께 */
@@ -326,11 +337,15 @@
       <!-- 중앙 캔버스 -->
       <div class="center">
         <div id="canvas" class="card">
-          <img id="bgImg" alt="floor plan" />
+          <div id="stage">
+            <img id="bgImg" src="" alt="floor plan" />
+            <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
           <div class="statusbar" id="status">
             새 프로젝트를 생성하거나 기존 프로젝트를 열어주세요.
           </div>
-          <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+          <!-- <img id="bgImg" alt="floor plan" />
+          <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg> -->
         </div>
         <div class="empty" id="emptyState">
           <div class="bubble">

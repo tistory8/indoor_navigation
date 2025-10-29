@@ -10,6 +10,7 @@ const state = {
   imageLocked: true,
 
   graph: { nodes: [], links: [] },
+  view: { scale: 1, tx: 0, ty: 0 },
   tool: "select",
   selection: { type: null, id: null },
 };
@@ -25,6 +26,7 @@ const els = {
   btnLock: document.getElementById("btnLock"),
   bgName: document.getElementById("bgName"),
   canvas: document.getElementById("canvas"),
+  stage: document.getElementById("stage"),
   bgImg: document.getElementById("bgImg"),
   empty: document.getElementById("emptyState"),
   status: document.getElementById("status"),
@@ -158,8 +160,19 @@ function renderFloor() {
   }
   els.floorLbl.textContent = "🏢 층: " + (state.currentFloor + 1);
 
-  redrawOverlay();
+  // redrawOverlay();
 }
+els.bgImg.addEventListener("load", () => {
+  const natW = els.bgImg.naturalWidth || 1;
+  const natH = els.bgImg.naturalHeight || 1;
+  // stage/overlay를 자연 해상도 기준으로 맞추기
+  els.stage.style.width = `${natW}px`;
+  els.stage.style.height = `${natH}px`;
+  // 초기도 살짝 가운데 보이게 하려면 tx/ty 조정 가능(옵션)
+  applyViewTransform();
+  redrawOverlay();
+});
+
 function populateFloorSelect() {
   els.floorSelect.innerHTML = "";
   for (let i = 0; i < state.floors; i++) {
@@ -180,28 +193,141 @@ function activateProject() {
   renderFloor();
 }
 
+window.addEventListener(
+  "wheel",
+  (e) => {
+    if (e.ctrlKey) e.preventDefault();
+  },
+  { passive: false }
+);
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
+    e.preventDefault();
+  }
+});
+// 휠로 확대/축소 (Ctrl 불필요) – 마우스 기준 줌
+els.canvas.addEventListener(
+  "wheel",
+  (e) => {
+    // 스크롤 페이지 이동 방지
+    e.preventDefault();
+    const { left, top } = els.canvas.getBoundingClientRect();
+    const mx = e.clientX - left; // 캔버스 좌표
+    const my = e.clientY - top;
+
+    const prev = { ...state.view };
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; // 줌 스텝
+    const minScale = 0.2,
+      maxScale = 8;
+    const nextScale = Math.min(
+      maxScale,
+      Math.max(minScale, prev.scale * factor)
+    );
+
+    // 화면상 (mx,my)에 있는 이미지 좌표(자연 해상도 기준) 구하기
+    const imgX = (mx - prev.tx) / prev.scale;
+    const imgY = (my - prev.ty) / prev.scale;
+
+    // 같은 이미지 점이 줌 후에도 같은 화면 위치에 오도록 tx,ty 보정
+    state.view.scale = nextScale;
+    state.view.tx = mx - imgX * nextScale;
+    state.view.ty = my - imgY * nextScale;
+
+    applyViewTransform();
+  },
+  { passive: false }
+);
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+let viewStart = { tx: 0, ty: 0 };
+
+els.canvas.addEventListener("mousedown", (e) => {
+  // 스페이스바를 누르고 드래그하면 화면 이동
+  if (
+    !e.button &&
+    e.shiftKey === false &&
+    e.altKey === false &&
+    e.ctrlKey === false &&
+    e.metaKey === false
+  ) {
+    // 기본은 툴 클릭 동작이 있으니, '스페이스'로만 팬하고 싶으면 아래 조건을 바꿔:
+    // if (!e.button && e.code === 'Space') ...
+  }
+  if (
+    e.button === 1 ||
+    e.code === "Space" ||
+    e.buttons === 4 ||
+    e.which === 2
+  ) {
+    e.preventDefault();
+  }
+});
+
+// 권장: 스페이스 누르면 팬모드
+let spaceHeld = false;
++window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") spaceHeld = true;
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") spaceHeld = false;
+});
+
+els.canvas.addEventListener("pointerdown", (e) => {
+  if (spaceHeld || e.button === 1) {
+    // 스페이스 or 휠버튼
+    e.preventDefault();
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY };
+    viewStart = { tx: state.view.tx, ty: state.view.ty };
+    els.canvas.setPointerCapture(e.pointerId);
+  }
+});
+els.canvas.addEventListener("pointermove", (e) => {
+  if (!isPanning) return;
+  const dx = e.clientX - panStart.x;
+  const dy = e.clientY - panStart.y;
+  state.view.tx = viewStart.tx + dx;
+  state.view.ty = viewStart.ty + dy;
+  applyViewTransform();
+});
+els.canvas.addEventListener("pointerup", (e) => {
+  if (isPanning) {
+    isPanning = false;
+    els.canvas.releasePointerCapture(e.pointerId);
+  }
+});
 function imagePointFromClient(ev) {
-  const rect = els.bgImg.getBoundingClientRect();
-  return { x: ev.clientX - rect.left, y: ev.clientY - rect.top, rect };
+  const { left, top } = els.canvas.getBoundingClientRect();
+  // const { scale, tx, ty } = state.view;
+  const view = state.view || { scale: 1, tx: 0, ty: 0 };
+  const cx = ev.clientX - left;
+  const cy = ev.clientY - top;
+  const x = (cx - view.tx) / view.scale;
+  const y = (cy - view.ty) / view.scale;
+  const natW = els.bgImg.naturalWidth || els.bgImg.width || 0;
+  const natH = els.bgImg.naturalHeight || els.bgImg.height || 0;
+
+  return {
+    x,
+    y,
+    rect: { left: 0, top: 0, width: natW, height: natH },
+  };
 }
+
 
 function redrawOverlay() {
   const svg = els.overlay;
+  const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
+  const natH = els.bgImg.naturalHeight || els.bgImg.height || 1;
 
-  const imgRect = els.bgImg.getBoundingClientRect();
-  const canvasRect = els.canvas.getBoundingClientRect();
-
-  const left = imgRect.left - canvasRect.left;
-  const top = imgRect.top - canvasRect.top;
-  svg.style.left = `${left}px`;
-  svg.style.top = `${top}px`;
-  svg.style.width = `${Math.max(imgRect.width, 1)}px`;
-  svg.style.height = `${Math.max(imgRect.height, 1)}px`;
-  
-  // SVG 내부 좌표계를 이미지 크기와 일치
-  svg.setAttribute("viewBox", `0 0 ${Math.max(imgRect.width, 1)} ${Math.max(imgRect.height, 1)}`);
-  svg.setAttribute("width", imgRect.width);
-  svg.setAttribute("height", imgRect.height);
+  // ✅ 내부 좌표계를 '자연 해상도'로 고정
+  // svg.style.left = `0px`;
+  // svg.style.top = `0px`;
+  svg.style.width = `${natW}px`;
+  svg.style.height = `${natH}px`;
+  svg.setAttribute("viewBox", `0 0 ${natW} ${natH}`);
+  svg.setAttribute("width", natW);
+  svg.setAttribute("height", natH);
 
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
@@ -262,6 +388,11 @@ function redrawOverlay() {
 }
 
 window.addEventListener("resize", redrawOverlay);
+
+function applyViewTransform() {
+  const { scale, tx, ty } = state.view;
+  els.stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
 
 function hasLinkBetween(a, b) {
   return state.graph.links.some(
