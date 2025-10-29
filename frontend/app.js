@@ -187,14 +187,22 @@ function imagePointFromClient(ev) {
 
 function redrawOverlay() {
   const svg = els.overlay;
-  // 크기 동기화
-  const r = els.bgImg.getBoundingClientRect();
-  svg.setAttribute(
-    "viewBox",
-    `0 0 ${Math.max(r.width, 1)} ${Math.max(r.height, 1)}`
-  );
-  svg.setAttribute("width", r.width);
-  svg.setAttribute("height", r.height);
+
+  const imgRect = els.bgImg.getBoundingClientRect();
+  const canvasRect = els.canvas.getBoundingClientRect();
+
+  const left = imgRect.left - canvasRect.left;
+  const top = imgRect.top - canvasRect.top;
+  svg.style.left = `${left}px`;
+  svg.style.top = `${top}px`;
+  svg.style.width = `${Math.max(imgRect.width, 1)}px`;
+  svg.style.height = `${Math.max(imgRect.height, 1)}px`;
+  
+  // SVG 내부 좌표계를 이미지 크기와 일치
+  svg.setAttribute("viewBox", `0 0 ${Math.max(imgRect.width, 1)} ${Math.max(imgRect.height, 1)}`);
+  svg.setAttribute("width", imgRect.width);
+  svg.setAttribute("height", imgRect.height);
+
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
   // links
@@ -252,6 +260,8 @@ function redrawOverlay() {
   els.layerInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}`;
   els.totalInfo.innerHTML = els.layerInfo.innerHTML;
 }
+
+window.addEventListener("resize", redrawOverlay);
 
 function hasLinkBetween(a, b) {
   return state.graph.links.some(
