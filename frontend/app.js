@@ -14,6 +14,11 @@ const state = {
   tool: "select",
   selection: { type: null, id: null },
 };
+state.keys = { shift: false };
+state.mouse = { x: 0, y: 0 };
+state.snapGuide = null;
+state.longPress = { active: false, timer: null, threshold: 220, anchor: null };
+state.longPressMoveCancel = 6;
 
 // ------- Elements -------
 const els = {
@@ -193,6 +198,41 @@ function activateProject() {
   renderFloor();
 }
 
+function drawSnapGuide(svg, guide) {
+  if (!guide) return;
+  const { anchor, orient } = guide;
+  // 이미지(=SVG) 크기: 프로젝트에서 쓰는 값으로 교체
+  const W = state.imageSize?.w || svg.viewBox.baseVal.width || svg.clientWidth;
+  const H =
+    state.imageSize?.h || svg.viewBox.baseVal.height || svg.clientHeight;
+
+  // 1) 기준 노드 링
+  const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  ring.setAttribute("cx", anchor.x);
+  ring.setAttribute("cy", anchor.y);
+  ring.setAttribute("r", 8); // 필요 시 줌 비율로 조정
+  ring.classList.add("anchor-ring");
+  svg.appendChild(ring);
+
+  // 2) 안내선 (가로 또는 세로)
+  const gl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  if (orient === "h") {
+    // 수평 가이드
+    gl.setAttribute("x1", 0);
+    gl.setAttribute("y1", anchor.y);
+    gl.setAttribute("x2", W);
+    gl.setAttribute("y2", anchor.y);
+  } else {
+    // 수직 가이드
+    gl.setAttribute("x1", anchor.x);
+    gl.setAttribute("y1", 0);
+    gl.setAttribute("x2", anchor.x);
+    gl.setAttribute("y2", H);
+  }
+  gl.classList.add("guide-line");
+  svg.appendChild(gl);
+}
+
 window.addEventListener(
   "wheel",
   (e) => {
@@ -265,11 +305,20 @@ els.canvas.addEventListener("mousedown", (e) => {
 
 // 권장: 스페이스 누르면 팬모드
 let spaceHeld = false;
-+window.addEventListener("keydown", (e) => {
+let draggingNodeId = null;
+let dragStart = null;
+let nodeStart = null;
+window.addEventListener("keydown", (e) => {
   if (e.code === "Space") spaceHeld = true;
+  if (e.key === "Shift") state.keys.shift = true;
 });
 window.addEventListener("keyup", (e) => {
   if (e.code === "Space") spaceHeld = false;
+  if (e.key === "Shift") {
+    state.keys.shift = false;
+    state.snapGuide = null;
+    redrawOverlay();
+  }
 });
 
 els.canvas.addEventListener("pointerdown", (e) => {
@@ -314,6 +363,42 @@ function imagePointFromClient(ev) {
   };
 }
 
+function drawSnapGuide(svg, guide) {
+  if (!guide) return;
+  const { anchor, orient } = guide;
+  const W = svg.viewBox?.baseVal?.width || svg.clientWidth;
+  const H = svg.viewBox?.baseVal?.height || svg.clientHeight;
+
+  const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  ring.setAttribute("cx", anchor.x);
+  ring.setAttribute("cy", anchor.y);
+  ring.setAttribute("r", 8);
+  ring.setAttribute("fill", "none");
+  ring.setAttribute("stroke", "var(--accent)");
+  ring.setAttribute("stroke-width", "2");
+  ring.setAttribute("stroke-dasharray", "2 2");
+  ring.style.pointerEvents = "none";
+  svg.appendChild(ring);
+
+  const gl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  if (orient === "h") {
+    gl.setAttribute("x1", 0);
+    gl.setAttribute("y1", anchor.y);
+    gl.setAttribute("x2", W);
+    gl.setAttribute("y2", anchor.y);
+  } else {
+    gl.setAttribute("x1", anchor.x);
+    gl.setAttribute("y1", 0);
+    gl.setAttribute("x2", anchor.x);
+    gl.setAttribute("y2", H);
+  }
+  gl.setAttribute("stroke", "var(--accent)");
+  gl.setAttribute("stroke-width", "1");
+  gl.setAttribute("stroke-opacity", ".55");
+  gl.setAttribute("stroke-dasharray", "4 4");
+  gl.style.pointerEvents = "none";
+  svg.appendChild(gl);
+}
 
 function redrawOverlay() {
   const svg = els.overlay;
@@ -380,8 +465,52 @@ function redrawOverlay() {
         handleLinkPick(n.id);
       }
     });
+    c.addEventListener("pointerdown", (e) => {
+      if (state.tool !== "select") return;
+      e.preventDefault();
+      const { x, y } = imagePointFromClient(e);
+      draggingNodeId = n.id;
+      dragStart = { x, y };
+      nodeStart = { x: n.x, y: n.y };
+      els.overlay.setPointerCapture(e.pointerId);
+    });
     svg.appendChild(c);
   }
+
+  if (state.tool === "link" && pendingLinkFrom) {
+    const startNode = state.graph.nodes.find((n) => n.id === pendingLinkFrom);
+    if (startNode) {
+      let px = state.mouse.x;
+      let py = state.mouse.y;
+      let orient = null;
+
+      if (state.keys.shift) {
+        const dx = Math.abs(px - startNode.x);
+        const dy = Math.abs(py - startNode.y);
+        orient = dx >= dy ? "h" : "v";
+        if (orient === "h") py = startNode.y;
+        else px = startNode.x;
+        // 가이드 세팅 (redraw가 여러 번 불려도 문제 없음)
+        state.snapGuide = {
+          anchor: { x: startNode.x, y: startNode.y },
+          orient,
+        };
+      } else {
+        state.snapGuide = null;
+      }
+
+      const pl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      pl.setAttribute("x1", startNode.x);
+      pl.setAttribute("y1", startNode.y);
+      pl.setAttribute("x2", px);
+      pl.setAttribute("y2", py);
+      pl.classList.add("preview-line");
+      svg.appendChild(pl);
+    }
+  }
+
+  drawSnapGuide(svg, state.snapGuide);
+
   // 통계 갱신
   els.layerInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}`;
   els.totalInfo.innerHTML = els.layerInfo.innerHTML;
@@ -587,6 +716,153 @@ setEnabled(false);
 buildStartFloorOptions(4);
 buildFloorFileRows();
 
+// 마우스 이동 시 현재 좌표 갱신 (링크 미리보기/드래그에서 사용)
+els.overlay.addEventListener("pointermove", (ev) => {
+  const pt = imagePointFromClient(ev);
+  state.mouse = { x: pt.x, y: pt.y };
+
+  // 노드 드래그 중이면 좌표 업데이트
+  if (draggingNodeId) {
+    const n = state.graph.nodes.find((nd) => nd.id === draggingNodeId);
+    if (!n) return;
+
+    // 이동량
+    let dx = pt.x - dragStart.x;
+    let dy = pt.y - dragStart.y;
+
+    // Shift 스냅: 수평/수직으로만
+    if (state.keys.shift) {
+      // 어떤 축으로 고정되는지 결정
+      const orient = Math.abs(dx) >= Math.abs(dy) ? "h" : "v";
+      if (orient === "h") dy = 0;
+      else dx = 0;
+
+      // 가이드: 기준은 드래그 시작 당시 노드 좌표(nodeStart)
+      state.snapGuide = { anchor: { x: nodeStart.x, y: nodeStart.y }, orient };
+    } else {
+      state.snapGuide = null;
+    }
+
+    n.x = nodeStart.x + dx;
+    n.y = nodeStart.y + dy;
+    redrawOverlay();
+  } else {
+    // 드래그 중 아니더라도 링크 미리보기 위해 리프레시
+    if (state.tool === "link") redrawOverlay();
+  }
+
+  // 롱프레스 중이면 안내선만 보여준다 (스냅은 하지 않음)
+  if (state.longPress.active && state.longPress.anchor) {
+    const dx = Math.abs(state.mouse.x - state.longPress.anchor.x);
+    const dy = Math.abs(state.mouse.y - state.longPress.anchor.y);
+    const orient = dx >= dy ? "h" : "v";
+    state.snapGuide = { anchor: state.longPress.anchor, orient };
+    // redrawOverlay()는 너가 이미 각 분기에서 호출 중이면 생략 가능
+  }
+});
+
+let lpStartClient = null;
+
+els.overlay.addEventListener("pointerdown", (e) => {
+  const pt = imagePointFromClient(e); // 이미지 좌표로 변환하는 기존 함수
+  // 기준 앵커: 드래그 중이면 그 노드 시작점, 링크 도구면 첫 노드, 아니면 현재 포인트
+  let anchor = pt;
+  if (
+    typeof draggingNodeId === "string" ||
+    typeof draggingNodeId === "number"
+  ) {
+    anchor = { x: nodeStart?.x ?? pt.x, y: nodeStart?.y ?? pt.y };
+  } else if (state.tool === "link" && pendingLinkFrom != null) {
+    const n0 = state.graph.nodes.find((n) => n.id === pendingLinkFrom);
+    if (n0) anchor = { x: n0.x, y: n0.y };
+  }
+
+  clearTimeout(state.longPress.timer);
+  state.longPress.active = false;
+  state.longPress.anchor = anchor;
+  lpStartClient = { x: e.clientX, y: e.clientY };
+
+  state.longPress.timer = setTimeout(() => {
+    state.longPress.active = true; // 롱프레스 진입
+    state.snapGuide = { anchor, orient: "h" }; // 초기값
+    redrawOverlay();
+  }, state.longPress.threshold);
+});
+
+els.overlay.addEventListener("pointerup", (ev) => {
+  if (draggingNodeId) {
+    draggingNodeId = null;
+    dragStart = null;
+    nodeStart = null;
+    state.snapGuide = null;
+    try {
+      els.overlay.releasePointerCapture(ev.pointerId);
+    } catch {}
+  }
+});
+
+function cancelLongPress() {
+  clearTimeout(state.longPress.timer);
+  state.longPress.timer = null;
+  state.longPress.active = false;
+}
+
+function endLongPress() {
+  cancelLongPress();
+  state.snapGuide = null;
+  redrawOverlay();
+}
+
+function endLongPressDeferred(e) {
+  // 롱프레스 상태가 아니면 무시
+  if (!state.longPress?.timer && !state.longPress?.active) return;
+
+  // 링크 도구일 때는 클릭 처리(노드 선택/연결)가 먼저 끝난 뒤에 종료
+  if (state.tool === "link") {
+    setTimeout(() => {
+      cancelLongPress(); // 타이머 클리어 + active=false
+      state.snapGuide = null; // 가이드 제거
+      redrawOverlay(); // 화면 갱신 (클릭 후에)
+    }, 0); // ← 클릭 이벤트보다 나중에 실행
+    return;
+  }
+
+  // 나머지 도구는 즉시 종료해도 OK
+  cancelLongPress();
+  state.snapGuide = null;
+  redrawOverlay();
+}
+els.overlay.addEventListener("pointerup", endLongPressDeferred, {
+  passive: true,
+});
+els.overlay.addEventListener("pointercancel", endLongPressDeferred, {
+  passive: true,
+});
+els.overlay.addEventListener("pointerleave", endLongPressDeferred, {
+  passive: true,
+});
+
+els.overlay.addEventListener("pointermove", (e) => {
+  // 이동이 임계값을 넘으면 롱프레스 취소(실수 방지)
+  if (state.longPress.timer && lpStartClient) {
+    const dx = Math.abs(e.clientX - lpStartClient.x);
+    const dy = Math.abs(e.clientY - lpStartClient.y);
+    if (dx > state.longPressMoveCancel || dy > state.longPressMoveCancel) {
+      cancelLongPress();
+    }
+  }
+
+  // 롱프레스 상태면 가이드만 갱신(스냅은 X)
+  if (state.longPress.active && state.longPress.anchor) {
+    const pt = imagePointFromClient(e);
+    const dx = Math.abs(pt.x - state.longPress.anchor.x);
+    const dy = Math.abs(pt.y - state.longPress.anchor.y);
+    const orient = dx >= dy ? "h" : "v";
+    state.snapGuide = { anchor: state.longPress.anchor, orient };
+    redrawOverlay();
+  }
+});
+
 // 배경 이미지 위 클릭으로만 편집 (이미지 없으면 무시)
 els.overlay.addEventListener("click", (ev) => {
   const { x, y, rect } = imagePointFromClient(ev);
@@ -594,6 +870,14 @@ els.overlay.addEventListener("click", (ev) => {
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
 
   if (state.tool === "node") {
+    let { x, y } = imagePointFromClient(ev);
+    if (state.keys.shift && state.graph.nodes.length) {
+      const last = state.graph.nodes[state.graph.nodes.length - 1];
+      const dx = Math.abs(x - last.x);
+      const dy = Math.abs(y - last.y);
+      if (dx >= dy) y = last.y;
+      else x = last.x; // 수평/수직 스냅
+    }
     const newNode = {
       id: `n_${Math.random().toString(36).slice(2, 8)}`,
       name: "",
@@ -604,7 +888,6 @@ els.overlay.addEventListener("click", (ev) => {
     selectNode(newNode.id);
     redrawOverlay();
   } else if (state.tool === "select") {
-    // 빈 공간 클릭 → 선택 해제
     clearSelection();
   }
 });
