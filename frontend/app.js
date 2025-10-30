@@ -56,8 +56,6 @@ const els = {
   // modal
   modalBack: document.getElementById("newModalBack"),
   closeModal: document.getElementById("closeModal"),
-
-  // mode: document.getElementById("mode"),
   floorCount: document.getElementById("floorCount"),
   startFloor: document.getElementById("startFloor"),
   scale: document.getElementById("scale"),
@@ -251,7 +249,6 @@ function getAxisSnapCandidates(px, py, tol = state.snap.tol) {
   return { v, h };
 }
 
-
 function drawSnapGuides(svg) {
   // 기존 가이드 제거
   const old = svg.querySelector("#snap-guides");
@@ -339,7 +336,6 @@ function drawSnapGuides(svg) {
 
   svg.appendChild(g);
 }
-
 
 window.addEventListener(
   "wheel",
@@ -1050,7 +1046,6 @@ els.overlay.addEventListener(
   { passive: false }
 );
 
-
 function cancelLongPress() {
   clearTimeout(state.longPress.timer);
   state.longPress.timer = null;
@@ -1138,7 +1133,12 @@ els.overlay.addEventListener("click", (ev) => {
   //   selectNode(newNode.id);
   //   redrawOverlay();
   // } else
-  if (suppressNextClick) { suppressNextClick = false; ev.preventDefault(); ev.stopPropagation(); return; }
+  if (suppressNextClick) {
+    suppressNextClick = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
   if (state.tool === "select" && ev.target === els.overlay) {
     clearSelection();
   }
