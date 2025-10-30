@@ -155,6 +155,7 @@ input[type="text"] {
   padding: 0 8px;
   background: #fff;
   flex: 1;
+  width: 100%;
 }
 .center {
   position: relative;
@@ -165,7 +166,7 @@ input[type="text"] {
   height: 100%;
   display: grid;
   place-items: center;
-  background: #fff;
+  background: #707070;
   border: 1px solid var(--line);
   border-radius: 14px;
 }
@@ -176,6 +177,7 @@ input[type="text"] {
   transform-origin: 0 0;
   will-change: transform;
   touch-action: none; /* 터치 핀치/팬 커스텀 제스처용 */
+  background-color: #fff;
 }
 #bgImg {
   max-width: 100%;

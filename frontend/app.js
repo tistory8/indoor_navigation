@@ -16,20 +16,21 @@ const state = {
 
   snap: {
     active: true,
-    tol: 8, // 스냅 허용 픽셀
-    candidate: null, // { orient:'v'|'h', x?, y? }
+    tol: 10, // 스냅 허용 픽셀
+    cand: { v: null, h: null }, // { v:{x,ax,ay,dx}, h:{y,ax,ay,dy} }
   },
+  compass: { picking: null, tempA: null, tempB: null },
 };
-state.keys = { shift: false };
 state.mouse = { x: 0, y: 0 };
+
+// snapshot
+state.keys = { shift: false };
 state.snapGuide = null;
 state.longPress = { active: false, timer: null, threshold: 220, anchor: null };
 state.longPressMoveCancel = 6;
-state.snap = state.snap ?? {
-  active: true,
-  tol: 10, // 스냅 허용 픽셀
-  cand: { v: null, h: null }, // { v:{x,ax,ay,dx}, h:{y,ax,ay,dy} }
-};
+
+// save
+state.northRef = { from_node: null, to_node: null, azimuth: 0 };
 
 // ------- Elements -------
 const els = {
@@ -73,13 +74,13 @@ const els = {
   nodeName: document.getElementById("nodeName"),
   nodeX: document.getElementById("nodeX"),
   nodeY: document.getElementById("nodeY"),
+  nodeType: document.getElementById("nodeType"),
 
   // link props
   linkGroup: document.getElementById("linkGroup"),
   linkId: document.getElementById("linkId"),
   linkFrom: document.getElementById("linkFrom"),
   linkTo: document.getElementById("linkTo"),
-  linkType: document.getElementById("linkType"),
 };
 
 // ---------------------------------------
@@ -98,6 +99,9 @@ function setEnabled(enabled) {
     if (e) e.disabled = !enabled;
   });
   els.btnSave.disabled = !enabled;
+
+  els.btnOpen?.removeAttribute("disabled");
+  els.btnOpen.disabled = false;
 }
 function openModal() {
   els.modalBack.style.display = "flex";
@@ -179,6 +183,30 @@ function renderFloor() {
 
   // redrawOverlay();
 }
+
+// ----------------------------------------------
+// -------------- settings ----------------------
+function sanitizeName(str) {
+  const s = (str || "").trim() || "project";
+  // 윈도우/맥에서 폴더명 불가 문자 제거
+  return s.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
+}
+
+function getProjectName() {
+  // 네 코드에서 쓰는 후보들을 다 시도
+  const v =
+    (window.els?.projName && els.projName.value) ||
+    (window.els?.projectName && els.projectName.value) ||
+    (window.state?.projectName) ||
+    (document.getElementById("projectName")?.value) ||
+    "새 프로젝트";
+  return sanitizeName(v);
+}
+
+
+
+
+
 els.bgImg.addEventListener("load", () => {
   const natW = els.bgImg.naturalWidth || 1;
   const natH = els.bgImg.naturalHeight || 1;
@@ -285,15 +313,6 @@ function drawSnapGuides(svg) {
     ln.setAttribute("x2", v.x);
     ln.setAttribute("y2", H);
     g.appendChild(ln);
-    // const dot = document.createElementNS(
-    //   "http://www.w3.org/2000/svg",
-    //   "circle"
-    // );
-    // dot.setAttribute("cx", v.ax);
-    // dot.setAttribute("cy", v.ay);
-    // dot.setAttribute("r", 3);
-    // dot.setAttribute("fill", "#FF3B30");
-    // g.appendChild(dot);
   }
   if (h) {
     const ln = mkLine();
@@ -302,15 +321,6 @@ function drawSnapGuides(svg) {
     ln.setAttribute("x2", W);
     ln.setAttribute("y2", h.y);
     g.appendChild(ln);
-    // const dot = document.createElementNS(
-    //   "http://www.w3.org/2000/svg",
-    //   "circle"
-    // );
-    // dot.setAttribute("cx", h.ax);
-    // dot.setAttribute("cy", h.ay);
-    // dot.setAttribute("r", 3);
-    // dot.setAttribute("fill", "#FF3B30");
-    // g.appendChild(dot);
   }
 
   const mkDot = (cx, cy) => {
@@ -318,8 +328,8 @@ function drawSnapGuides(svg) {
       "http://www.w3.org/2000/svg",
       "circle"
     );
-    dot.setAttribute("cx", h.ax);
-    dot.setAttribute("cy", h.ay);
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
     dot.setAttribute("r", 3);
     dot.setAttribute("fill", "#FF3B30");
     dot.setAttribute("pointer-events", "none");
@@ -488,6 +498,12 @@ function snapToAxisOfExisting(px, py, tol = 8) {
   return { x: outX, y: outY };
 }
 
+function getNodeLabelById(id) {
+  const n = state.graph.nodes.find((nn) => nn.id === id);
+  const name = (n?.name || "").trim();
+  return name ? name : id;
+}
+
 function redrawOverlay() {
   const svg = els.overlay;
   const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
@@ -548,25 +564,6 @@ function redrawOverlay() {
     g.appendChild(hit);
     g.appendChild(vis);
     svg.appendChild(g);
-    // const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    // line.setAttribute("x1", a.x);
-    // line.setAttribute("y1", a.y);
-    // line.setAttribute("x2", b.x);
-    // line.setAttribute("y2", b.y);
-    // line.classList.add("link-line");
-    // line.setAttribute("pointer-events", "stroke");
-    // line.setAttribute("stroke-width", "6");
-    // if (state.selection.type === "link" && state.selection.id === lk.id) {
-    //   line.classList.add("selected");
-    // }
-    // line.dataset.id = lk.id;
-    // line.addEventListener("click", (e) => {
-    //   if (state.tool === "select") {
-    //     e.stopPropagation();
-    //     selectLink(lk.id);
-    //   }
-    // });
-    // svg.appendChild(line);
   }
 
   // nodes
@@ -592,8 +589,39 @@ function redrawOverlay() {
       } else if (state.tool === "link") {
         e.stopPropagation();
         handleLinkPick(n.id);
+      } else if (state.tool === "compass") {
+        e.stopPropagation();
+
+        // first selection
+        if (!state.compass.tempA) {
+          state.compass.tempA = n.id;
+          els.status.textContent = `나침반: 첫 노드 선택 → ${n.name || n.id}`;
+          redrawOverlay?.();
+          return;
+        }
+
+        // second selection
+        if (!state.compass.tempB && n.id !== state.compass.tempA) {
+          state.compass.tempB = n.id;
+          const A = state.graph.nodes.find((x) => x.id === state.compass.tempA);
+          const B = state.graph.nodes.find((x) => x.id === state.compass.tempB);
+          if (A && B) {
+            const az = computeAzimuthDeg(A, B);
+            state.northRef = { from_node: A.id, to_node: B.id, azimuth: az };
+            els.status.textContent = `나침반 저장: ${A.name || A.id} → ${
+              B.name || B.id
+            } (azimuth ${az}°)`;
+            els.projState.textContent = "상태: 수정됨";
+            els.projState.style.color = "#e67e22";
+          }
+          // 한 번 설정 후, 다음 측정 대비 초기화(원하면 유지해도 됨)
+          state.compass.tempA = null;
+          state.compass.tempB = null;
+          redrawOverlay?.();
+        }
       }
     });
+
     c.addEventListener("pointerdown", (e) => {
       if (state.tool !== "select") return;
       e.stopPropagation();
@@ -605,6 +633,7 @@ function redrawOverlay() {
       nodeStart = { x: n.x, y: n.y };
       els.overlay.setPointerCapture(e.pointerId);
     });
+
     svg.appendChild(c);
   }
 
@@ -678,11 +707,13 @@ function updateLayersPanel() {
 
   // 2) Links
   for (const l of state.graph.links) {
+    const fromText = getNodeLabelById(l.a);
+    const toText = getNodeLabelById(l.b);
     items.push({
       id: l.id,
       type: "link",
       label: `🔗 ${l.id}`,
-      meta: `${l.a} → ${l.b}`,
+      meta: `${fromText} → ${toText}`,
       active: state.selection?.type === "link" && state.selection?.id === l.id,
       onClick: () => selectLink(l.id),
     });
@@ -748,7 +779,7 @@ function handleLinkPick(nodeId) {
       id: `lk_${Math.random().toString(36).slice(2, 8)}`,
       a: pendingLinkFrom,
       b: nodeId,
-      type: "일반",
+      // type: "일반",
     };
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
@@ -767,6 +798,7 @@ function selectNode(id) {
   els.nodeName.value = n.name || "";
   els.nodeX.value = Math.round(n.x);
   els.nodeY.value = Math.round(n.y);
+  els.nodeType.value = n.type || "일반";
   redrawOverlay();
 }
 
@@ -790,7 +822,6 @@ function selectLink(id) {
   els.linkTo.innerHTML = opts;
   els.linkFrom.value = l.a;
   els.linkTo.value = l.b;
-  els.linkType.value = l.type || "일반";
   redrawOverlay();
 }
 function clearSelection() {
@@ -1011,32 +1042,6 @@ els.overlay.addEventListener(
   { passive: false }
 );
 
-// els.overlay.addEventListener("pointerdown", (e) => {
-//   const pt = imagePointFromClient(e); // 이미지 좌표로 변환하는 기존 함수
-//   // 기준 앵커: 드래그 중이면 그 노드 시작점, 링크 도구면 첫 노드, 아니면 현재 포인트
-//   let anchor = pt;
-//   if (
-//     typeof draggingNodeId === "string" ||
-//     typeof draggingNodeId === "number"
-//   ) {
-//     anchor = { x: nodeStart?.x ?? pt.x, y: nodeStart?.y ?? pt.y };
-//   } else if (state.tool === "link" && pendingLinkFrom != null) {
-//     const n0 = state.graph.nodes.find((n) => n.id === pendingLinkFrom);
-//     if (n0) anchor = { x: n0.x, y: n0.y };
-//   }
-
-//   clearTimeout(state.longPress.timer);
-//   state.longPress.active = false;
-//   state.longPress.anchor = anchor;
-//   lpStartClient = { x: e.clientX, y: e.clientY };
-
-//   state.longPress.timer = setTimeout(() => {
-//     state.longPress.active = true; // 롱프레스 진입
-//     state.snapGuide = { anchor, orient: "h" }; // 초기값
-//     redrawOverlay();
-//   }, state.longPress.threshold);
-// });
-
 els.overlay.addEventListener("pointerup", (ev) => {
   if (draggingNodeId) {
     draggingNodeId = null;
@@ -1175,25 +1180,6 @@ els.overlay.addEventListener("click", (ev) => {
   // 이미지 영역 밖 클릭 무시
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
 
-  // if (state.tool === "node") {
-  //   if (state.keys.shift && state.graph.nodes.length) {
-  //     const last = state.graph.nodes[state.graph.nodes.length - 1];
-  //     const dx = Math.abs(x - last.x);
-  //     const dy = Math.abs(y - last.y);
-  //     if (dx >= dy) y = last.y;
-  //     else x = last.x; // 수평/수직 스냅
-  //   }
-  //   // ({ x, y } = snapToAxisOfExisting(x, y, 8));
-  //   const newNode = {
-  //     id: `n_${Math.random().toString(36).slice(2, 8)}`,
-  //     name: "",
-  //     x,
-  //     y,
-  //   };
-  //   state.graph.nodes.push(newNode);
-  //   selectNode(newNode.id);
-  //   redrawOverlay();
-  // } else
   if (suppressNextClick) {
     suppressNextClick = false;
     ev.preventDefault();
@@ -1229,6 +1215,11 @@ els.nodeY.addEventListener("input", () => {
   n.y = v;
   redrawOverlay();
 });
+els.nodeType.addEventListener("input", () => {
+  if (state.selection.type !== "node") return;
+  const n = state.graph.nodes.find((x) => x.id === state.selection.id);
+  n.type = els.nodeType.value;
+});
 
 // Link edits
 els.linkFrom.addEventListener("change", () => {
@@ -1242,11 +1233,6 @@ els.linkTo.addEventListener("change", () => {
   const l = state.graph.links.find((x) => x.id === state.selection.id);
   l.b = els.linkTo.value;
   redrawOverlay();
-});
-els.linkType.addEventListener("change", () => {
-  if (state.selection.type !== "link") return;
-  const l = state.graph.links.find((x) => x.id === state.selection.id);
-  l.type = els.linkType.value;
 });
 
 function applyToolCursor() {
@@ -1269,6 +1255,11 @@ function setTool(next) {
   if (state.tool !== "link") {
     pendingLinkFrom = null;
   }
+  if (next !== "compass") {
+    state.compass.picking = null;
+    state.compass.tempA = null;
+    state.compass.tempB = null;
+  }
 
   // 여기 두 줄이 맨 끝에 오도록
   applyToolCursor();
@@ -1280,6 +1271,338 @@ document.querySelectorAll(".toolbtn[data-tool]").forEach((btn) => {
   btn.addEventListener("click", () => {
     setTool(btn.getAttribute("data-tool"));
   });
+});
+
+// --------------------------------------------------------
+// ------------------ azimuth calculate -------------------
+
+function computeAzimuthDeg(A, B) {
+  // 북(위)=0°, 시계방향 + (브라우저 y축이 아래로 증가하므로 -dy 사용)
+  const dx = B.x - A.x;
+  const dy = B.y - A.y;
+  let deg = (Math.atan2(dx, -dy) * 180) / Math.PI;
+  if (deg < 0) deg += 360;
+  return +deg.toFixed(1);
+}
+
+// ----------------------------------------------------
+// ------------------ save function -------------------
+
+// --- Directory FS helpers ---
+async function pickProjectDirForSave() {
+  if (!window.showDirectoryPicker) return null;
+  return await window.showDirectoryPicker({ mode: "readwrite" });
+}
+async function pickProjectDirForOpen() {
+  if (!window.showDirectoryPicker) return null;
+  return await window.showDirectoryPicker({ mode: "read" });
+}
+async function ensureSubDir(dirHandle, name) {
+  return await dirHandle.getDirectoryHandle(name, { create: true });
+}
+async function writeFile(dirHandle, filename, blob) {
+  const fh = await dirHandle.getFileHandle(filename, { create: true });
+  const w = await fh.createWritable();
+  await w.write(blob);
+  await w.close();
+}
+async function readTextFile(dirHandle, filename) {
+  const fh = await dirHandle.getFileHandle(filename);
+  const f = await fh.getFile();
+  return await f.text();
+}
+async function readBlobFile(dirHandle, filename) {
+  const fh = await dirHandle.getFileHandle(filename);
+  const f = await fh.getFile();
+  return f;
+}
+async function saveProjectToDirectory() {
+  if (!window.showDirectoryPicker) throw new Error("Directory picker not available");
+
+  // 1) 사용자에게 '기본 경로'만 고르게 함 (여기에 프로젝트 폴더를 만들 것)
+  const baseDir = await window.showDirectoryPicker({ mode: "readwrite" });
+
+  // 2) 프로젝트 이름 폴더 만들기 (이미 있으면 그대로 사용: 덮어쓰기 동작)
+  const projName = getProjectName();
+  const projDir = await baseDir.getDirectoryHandle(projName, { create: true });
+
+  // 3) images/ 하위 폴더 확보
+  const imgDir = await projDir.getDirectoryHandle("images", { create: true });
+
+  // 4) 이미지 파일 저장 + JSON에 파일명 기록
+  const imagesField = {}; // { "0": "images/xxx.png", ... }
+  for (let i = 0; i < state.floors; i++) {
+    const url = state.images[i];
+    const pill = document.getElementById("fileName_" + i);
+    const label = (pill?.textContent || "").trim();
+
+    if (!url || !label || label === "이미지 없음") {
+      imagesField[i] = null;
+      continue;
+    }
+
+    // 확장자 추론 (기본 png)
+    const ext = label.includes(".") ? label.split(".").pop() : "png";
+    const safeName = sanitizeName(label) || `floor_${i + 1}.${ext}`;
+    const filename = safeName.endsWith("." + ext) ? safeName : `${safeName}.${ext}`;
+
+    // ObjectURL → Blob 변환 후 저장 (동일 파일명은 덮어씀)
+    const blob = await fetch(url).then(r => r.blob());
+    const fh = await imgDir.getFileHandle(filename, { create: true });
+    const w = await fh.createWritable();
+    await w.write(blob);
+    await w.close();
+
+    imagesField[i] = `images/${filename}`;
+  }
+
+  // 5) 그래프 JSON 생성 + images/meta/north_reference 포함
+  const json = serializeToInstarFormat();
+  json.images = imagesField;
+  json.meta = {
+    floors: state.floors,
+    startFloor: state.startFloor,
+    currentFloor: state.currentFloor,
+    scale: state.scale,
+    projectName: projName,
+  };
+
+  // 6) graph.json 저장 (프로젝트 폴더 직하)
+  const graphFh = await projDir.getFileHandle("graph.json", { create: true });
+  const gw = await graphFh.createWritable();
+  await gw.write(new Blob([JSON.stringify(json, null, 2)], { type: "application/json" }));
+  await gw.close();
+
+  els.projState.textContent = "상태: 저장됨";
+  els.projState.style.color = "#27ae60";
+  els.status.textContent = `저장 완료: ${projName}/ (images + graph.json)`;
+}
+
+
+// reformat the data
+function serializeToInstarFormat() {
+  // 0) north_reference
+  const fromNode = state.northRef.from_node;
+  const toNode = state.northRef.to_node;
+  const azimuth = state.northRef.azimuth;
+  const northObj = {
+    fromNode,
+    toNode,
+    azimuth,
+  };
+
+  // 1) nodes: 배열 → 객체
+  const nodesObj = {};
+  for (const n of state.graph.nodes) {
+    const item = { x: +n.x, y: +n.y };
+    if (n.name) item.name = n.name;
+    if (n.type && n.type !== "일반") item.special_id = n.type; // 맵핑 포인트
+    nodesObj[n.id] = item;
+  }
+
+  // 2) connections: 링크 → 양방향 adjacency + 거리(픽셀 단위)
+  const conn = {};
+  const ensure = (a) => (conn[a] ||= {});
+  for (const l of state.graph.links) {
+    const A = state.graph.nodes.find((x) => x.id === l.a);
+    const B = state.graph.nodes.find((x) => x.id === l.b);
+    if (!A || !B) continue;
+    const d = Math.hypot(A.x - B.x, A.y - B.y); // 픽셀 거리
+    ensure(A.id)[B.id] = +d.toFixed(2);
+    ensure(B.id)[A.id] = +d.toFixed(2);
+  }
+
+  // special_points: 노드 type 있는 것만
+  const sp = {};
+  for (const n of state.graph.nodes) {
+    if (n.type && n.type !== "일반") sp[n.id] = n.type;
+  }
+
+  const out = {
+    scale: Number(state.scale) || 0,
+    north_reference: northObj,
+    nodes: nodesObj,
+    connections: conn,
+  };
+  if (Object.keys(sp).length) out.special_points = sp;
+  if (state.northRef?.from_node && state.northRef?.to_node) {
+    out.north_reference = {
+      ...state.northRef,
+      azimuth: Number(state.northRef.azimuth) || 0,
+    };
+  }
+  return out;
+}
+
+// loading the saved files
+async function openProjectFromDirectory() {
+  if (!window.showDirectoryPicker) throw new Error("Directory picker not available");
+  const dir = await window.showDirectoryPicker({ mode: "read" });
+
+  // graph.json 읽기
+  const graphHandle = await dir.getFileHandle("graph.json");
+  const file = await graphHandle.getFile();
+  const json = JSON.parse(await file.text());
+
+  // 그래프/노드/azimuth 등 적용
+  applyFromInstarFormat(json);
+
+  // 이미지 복원
+  const imgMap = json.images || {};
+  let imgDir = null;
+  try { imgDir = await dir.getDirectoryHandle("images"); } catch (e) { imgDir = null; }
+
+  for (const k of Object.keys(imgMap)) {
+    const rel = imgMap[k];
+    const idx = Number(k);
+    if (!rel || !imgDir) {
+      if (state.images[idx]) {
+        try { URL.revokeObjectURL(state.images[idx]); } catch (_) {}
+        delete state.images[idx];
+      }
+      const pill = document.getElementById("fileName_" + idx);
+      if (pill) pill.textContent = "이미지 없음";
+      continue;
+    }
+    const filename = rel.split("/").pop();
+    const fh = await imgDir.getFileHandle(filename);
+    const f = await fh.getFile();
+    const url = URL.createObjectURL(f);
+    state.images[idx] = url;
+
+    const pill = document.getElementById("fileName_" + idx);
+    if (pill) pill.textContent = filename;
+  }
+
+  // 프로젝트 이름 표시(있다면)
+  if (json.meta?.projectName) {
+    if (els.projName) els.projName.value = json.meta.projectName;
+    state.projectName = json.meta.projectName;
+  }
+
+  // 화면 갱신
+  buildStartFloorOptions?.(state.floors);
+  renderFloor?.();
+  redrawOverlay?.();
+
+  els.projState.textContent = "상태: 저장됨";
+  els.projState.style.color = "#27ae60";
+  els.status.textContent = `열기 완료: ${(json.meta?.projectName || "프로젝트")}/`;
+}
+
+
+function applyFromInstarFormat(json) {
+  // scale
+  if (typeof json.scale === "number") {
+    state.scale = json.scale;
+    const scaleInput = document.getElementById("scale");
+    if (scaleInput) scaleInput.value = String(json.scale);
+  }
+
+  // nodes: 객체 → 배열
+  const nodes = [];
+  for (const [id, v] of Object.entries(json.nodes || {})) {
+    nodes.push({
+      id,
+      name: v.name || "",
+      x: Number(v.x) || 0,
+      y: Number(v.y) || 0,
+      ...(v.special_id ? { type: v.special_id } : {}),
+    });
+  }
+
+  // links: connections → 무방향 중복 제거해 배열 생성
+  const links = [];
+  const seen = new Set();
+  const conn = json.connections || {};
+  for (const a of Object.keys(conn)) {
+    for (const b of Object.keys(conn[a] || {})) {
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (seen.has(key)) continue;
+      if (!nodes.find((n) => n.id === a) || !nodes.find((n) => n.id === b))
+        continue;
+      links.push({ id: `lk_${Math.random().toString(36).slice(2, 8)}`, a, b });
+      seen.add(key);
+    }
+  }
+
+  // special_points → 노드에 special_id 주입(노드에도 이미 있을 수 있음)
+  if (json.special_points) {
+    for (const [nid, label] of Object.entries(json.special_points)) {
+      const n = nodes.find((x) => x.id === nid);
+      if (!n) continue;
+      if (!n.type || n.type === "일반") n.type = label;
+    }
+  }
+
+  // north_reference
+  state.northRef = json.north_reference
+    ? {
+        from_node: json.north_reference.from_node || null,
+        to_node: json.north_reference.to_node || null,
+        azimuth: Number(json.north_reference.azimuth) || 0,
+      }
+    : { from_node: null, to_node: null, azimuth: 0 };
+
+  // 적용
+  state.graph = { nodes, links };
+  // (층/배경이미지 스키마는 요구 포맷에 없으니, 현재 층만 그대로 유지)
+  // UI 갱신
+  clearSelection?.();
+  updateLayersPanel?.();
+  redrawOverlay?.();
+  els.projState.textContent = "상태: 저장됨";
+  els.projState.style.color = "#27ae60";
+}
+
+// connect function and save button
+// 저장
+els.btnSave.addEventListener("click", async () => {
+  try {
+    if (window.showDirectoryPicker) {
+      await saveProjectToDirectory();
+    } else {
+      // 폴백: 기존 JSON만 저장 (폴더 미지원 브라우저)
+      const data = serializeToInstarFormat();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      a.download = "graph.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      els.status.textContent = "폴더 저장 미지원 → JSON만 저장했습니다.";
+    }
+  } catch (e) {
+    console.error(e);
+    els.status.textContent = "저장 실패";
+  }
+});
+
+// connect function and open button
+els.btnOpen.addEventListener("click", async () => {
+  try {
+    if (window.showDirectoryPicker) {
+      await openProjectFromDirectory();
+    } else {
+      // 폴백: 기존 JSON만 열기
+      const [handle] = await showOpenFilePicker({
+        multiple: false,
+        types: [
+          {
+            description: "Graph JSON",
+            accept: { "application/json": [".json"] },
+          },
+        ],
+      });
+      const f = await handle.getFile();
+      const json = JSON.parse(await f.text());
+      applyFromInstarFormat(json);
+      els.status.textContent = "폴더 열기 미지원 → JSON만 열었습니다.";
+    }
+    activateProject();
+  } catch (e) {
+    console.error(e);
+    els.status.textContent = "열기 실패";
+  }
 });
 
 setTool("select");
