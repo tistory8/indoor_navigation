@@ -94,7 +94,9 @@ function setEnabled(enabled) {
     els.startX,
     els.startY,
     els.btnPickStart,
-  ].forEach((e) => (e.disabled = !enabled));
+  ].forEach((e) => {
+    if (e) e.disabled = !enabled;
+  });
   els.btnSave.disabled = !enabled;
 }
 function openModal() {
@@ -643,6 +645,8 @@ function redrawOverlay() {
   // 통계 갱신
   els.layerInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}`;
   els.totalInfo.innerHTML = els.layerInfo.innerHTML;
+
+  updateLayersPanel();
 }
 
 window.addEventListener("resize", redrawOverlay);
@@ -650,6 +654,57 @@ window.addEventListener("resize", redrawOverlay);
 function applyViewTransform() {
   const { scale, tx, ty } = state.view;
   els.stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
+
+function updateLayersPanel() {
+  const panel = document.getElementById("layersList");
+  if (!panel) return;
+
+  panel.innerHTML = "";
+
+  const items = [];
+
+  // 1) Nodes
+  for (const n of state.graph.nodes) {
+    items.push({
+      id: n.id,
+      type: "node",
+      label: `🔵 ${n.name || n.id}`,
+      meta: `(${Math.round(n.x)}, ${Math.round(n.y)})`,
+      active: state.selection?.type === "node" && state.selection?.id === n.id,
+      onClick: () => selectNode(n.id),
+    });
+  }
+
+  // 2) Links
+  for (const l of state.graph.links) {
+    items.push({
+      id: l.id,
+      type: "link",
+      label: `🔗 ${l.id}`,
+      meta: `${l.a} → ${l.b}`,
+      active: state.selection?.type === "link" && state.selection?.id === l.id,
+      onClick: () => selectLink(l.id),
+    });
+  }
+
+  if (items.length === 0) {
+    panel.innerHTML = '<div class="muted">아직 생성된 요소가 없습니다.</div>';
+    return;
+  }
+
+  for (const it of items) {
+    const div = document.createElement("div");
+    div.className = "layer-item" + (it.active ? " active" : "");
+    const left = document.createElement("div");
+    left.textContent = it.label;
+    const right = document.createElement("div");
+    right.className = "meta";
+    right.textContent = it.meta;
+    div.append(left, right);
+    div.addEventListener("click", it.onClick);
+    panel.appendChild(div);
+  }
 }
 
 function hasLinkBetween(a, b) {
@@ -817,27 +872,29 @@ els.btnLock.addEventListener("click", () => {
 });
 
 // 시작점 찍기 (V0: 좌표만 기록)
-els.btnPickStart.addEventListener("click", () => {
-  if (!state.loaded) return;
-  els.status.textContent = "시작점 찍기 모드: 이미지 위를 클릭하세요.";
-  const once = (ev) => {
-    if (ev.target.id !== "bgImg") {
+if (els.btnPickStart) {
+  els.btnPickStart.addEventListener("click", () => {
+    if (!state.loaded) return;
+    els.status.textContent = "시작점 찍기 모드: 이미지 위를 클릭하세요.";
+    const once = (ev) => {
+      if (ev.target.id !== "bgImg") {
+        els.canvas.removeEventListener("click", once);
+        els.status.textContent = "시작점 선택이 취소되었습니다.";
+        return;
+      }
+      const rect = els.bgImg.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      els.startX.value = x.toFixed(1);
+      els.startY.value = y.toFixed(1);
+      els.status.textContent = `시작점이 설정되었습니다: (${x.toFixed(
+        1
+      )}, ${y.toFixed(1)})`;
       els.canvas.removeEventListener("click", once);
-      els.status.textContent = "시작점 선택이 취소되었습니다.";
-      return;
-    }
-    const rect = els.bgImg.getBoundingClientRect();
-    const x = ev.clientX - rect.left;
-    const y = ev.clientY - rect.top;
-    els.startX.value = x.toFixed(1);
-    els.startY.value = y.toFixed(1);
-    els.status.textContent = `시작점이 설정되었습니다: (${x.toFixed(
-      1
-    )}, ${y.toFixed(1)})`;
-    els.canvas.removeEventListener("click", once);
-  };
-  els.canvas.addEventListener("click", once);
-});
+    };
+    els.canvas.addEventListener("click", once);
+  });
+}
 
 // 초기 상태: 편집 비활성
 setEnabled(false);
@@ -906,26 +963,28 @@ els.overlay.addEventListener(
     if (ev.button !== 0) return;
     if (ev.target !== els.overlay) return;
 
+    const now = performance.now();
+    if (now - lastNodeDownTs < 200) return; // 디바운스
+    lastNodeDownTs = now;
+
     const { x: px, y: py, rect } = imagePointFromClient(ev);
     if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
 
     let x = px,
       y = py;
-    const { v, h } = state.snap.cand || {};
+    const { v, h } = state.snap?.cand || {};
 
-    // 1) v/h 둘 다 있으면 교차점으로
+    // v/h 둘 다 → 교차점, 하나만 → 그 축으로 스냅
     if (v && h) {
       x = v.x;
       y = h.y;
-    }
-    // 2) 하나만 있으면 그 축으로
-    else if (v) {
+    } else if (v) {
       x = v.x;
     } else if (h) {
       y = h.y;
     }
 
-    // 3) (옵션) Shift: 직전 노드 기준 직교 스냅 우선
+    // (옵션) Shift 직교 스냅 우선하려면 이 블록을 위로 올려
     if (state.keys.shift && state.graph.nodes.length) {
       const last = state.graph.nodes[state.graph.nodes.length - 1];
       const dx = Math.abs(x - last.x),
@@ -944,6 +1003,8 @@ els.overlay.addEventListener(
     selectNode(newNode.id);
     redrawOverlay();
 
+    // 👉 뒤따르는 click을 한 번 무시
+    suppressNextClick = true;
     ev.preventDefault();
     ev.stopPropagation();
   },
