@@ -1,7 +1,8 @@
 // ------- App State -------
 const state = {
   loaded: false,
-  // mode: "monte",
+  projectName: "새 프로젝트",
+  projectAuthor: "",
   floors: 4,
   startFloor: 0,
   scale: 0.33167,
@@ -30,7 +31,11 @@ state.longPress = { active: false, timer: null, threshold: 220, anchor: null };
 state.longPressMoveCancel = 6;
 
 // save
-state.northRef = { from_node: null, to_node: null, azimuth: 0 };
+state.northRef = state.northRef || {
+  from_node: null,
+  to_node: null,
+  azimuth: 0,
+};
 
 // ------- Elements -------
 const els = {
@@ -48,6 +53,7 @@ const els = {
   empty: document.getElementById("emptyState"),
   status: document.getElementById("status"),
   projName: document.getElementById("projName"),
+  projAuthor: document.getElementById("projAuthor"),
   projState: document.getElementById("projState"),
   floorLbl: document.getElementById("floorLbl"),
   selLbl: document.getElementById("selLbl"),
@@ -57,6 +63,8 @@ const els = {
   // modal
   modalBack: document.getElementById("newModalBack"),
   closeModal: document.getElementById("closeModal"),
+  projectName: document.getElementById("projectName"),
+  projectAuthor: document.getElementById("projectAuthor"),
   floorCount: document.getElementById("floorCount"),
   startFloor: document.getElementById("startFloor"),
   scale: document.getElementById("scale"),
@@ -81,6 +89,15 @@ const els = {
   linkId: document.getElementById("linkId"),
   linkFrom: document.getElementById("linkFrom"),
   linkTo: document.getElementById("linkTo"),
+
+  // compass props
+  compassPanel: document.getElementById("compassPanel"),
+  compassFrom: document.getElementById("compassFrom"),
+  compassTo: document.getElementById("compassTo"),
+  compassAz: document.getElementById("compassAz"),
+  btnCompassApply: document.getElementById("btnCompassApply"),
+  btnCompassClear: document.getElementById("btnCompassClear"),
+  compassInfo: document.getElementById("compassInfo"),
 };
 
 // ---------------------------------------
@@ -179,7 +196,8 @@ function renderFloor() {
     els.bgImg.style.display = "none";
     els.bgName.textContent = "이미지 없음";
   }
-  els.floorLbl.textContent = "🏢 층: " + (state.currentFloor + 1);
+  els.selLbl.textContent = els.floorLbl.textContent =
+    "🏢 층: " + (state.currentFloor + 1);
 
   // redrawOverlay();
 }
@@ -193,19 +211,14 @@ function sanitizeName(str) {
 }
 
 function getProjectName() {
-  // 네 코드에서 쓰는 후보들을 다 시도
   const v =
     (window.els?.projName && els.projName.value) ||
     (window.els?.projectName && els.projectName.value) ||
-    (window.state?.projectName) ||
-    (document.getElementById("projectName")?.value) ||
+    window.state?.projectName ||
+    document.getElementById("projectName")?.value ||
     "새 프로젝트";
   return sanitizeName(v);
 }
-
-
-
-
 
 els.bgImg.addEventListener("load", () => {
   const natW = els.bgImg.naturalWidth || 1;
@@ -236,6 +249,32 @@ function activateProject() {
     "프로젝트가 로드되었습니다. 작업을 시작할 수 있습니다.";
   populateFloorSelect();
   renderFloor();
+}
+
+function populateCompassNodeSelects() {
+  const make = (sel) => {
+    sel.innerHTML = "";
+    // 전체 노드 중 현재 층 것만 쓰고 싶으면 visibleNodes() 사용
+    for (const n of state.graph.nodes) {
+      const opt = document.createElement("option");
+      opt.value = n.id;
+      opt.textContent = n.name && n.name.trim() ? `${n.name} (${n.id})` : n.id;
+      sel.appendChild(opt);
+    }
+  };
+  make(els.compassFrom);
+  make(els.compassTo);
+
+  // 기존 northRef가 있으면 기본 선택
+  if (state.northRef.from_node)
+    els.compassFrom.value = state.northRef.from_node;
+  if (state.northRef.to_node) els.compassTo.value = state.northRef.to_node;
+  if (typeof state.northRef.azimuth === "number")
+    els.compassAz.value = state.northRef.azimuth;
+  els.compassInfo.textContent =
+    state.northRef.from_node && state.northRef.to_node
+      ? `현재: ${state.northRef.from_node} → ${state.northRef.to_node}, ${state.northRef.azimuth}°`
+      : "미설정";
 }
 
 // ------------------------------------------------------------
@@ -606,7 +645,7 @@ function redrawOverlay() {
           const A = state.graph.nodes.find((x) => x.id === state.compass.tempA);
           const B = state.graph.nodes.find((x) => x.id === state.compass.tempB);
           if (A && B) {
-            const az = computeAzimuthDeg(A, B);
+            const az = 0;
             state.northRef = { from_node: A.id, to_node: B.id, azimuth: az };
             els.status.textContent = `나침반 저장: ${A.name || A.id} → ${
               B.name || B.id
@@ -777,9 +816,9 @@ function handleLinkPick(nodeId) {
 
     const newLink = {
       id: `lk_${Math.random().toString(36).slice(2, 8)}`,
+      floor: state.currentFloor,
       a: pendingLinkFrom,
       b: nodeId,
-      // type: "일반",
     };
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
@@ -859,7 +898,8 @@ els.modalOk.addEventListener("click", () => {
   state.startFloor = parseInt(els.startFloor.value || "0", 10);
   state.scale = parseFloat(els.scale.value || "0.33167");
   state.currentFloor = state.startFloor;
-  els.projName.textContent = "이름: 새 프로젝트";
+  els.projName.textContent = els.projectName.value;
+  els.projAuthor.textContent = els.projectAuthor.value;
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
   closeModal();
@@ -1027,6 +1067,7 @@ els.overlay.addEventListener(
     const newNode = {
       id: `n_${Math.random().toString(36).slice(2, 8)}`,
       name: "",
+      floor: state.currentFloor + 1,
       x,
       y,
     };
@@ -1255,10 +1296,12 @@ function setTool(next) {
   if (state.tool !== "link") {
     pendingLinkFrom = null;
   }
-  if (next !== "compass") {
-    state.compass.picking = null;
-    state.compass.tempA = null;
-    state.compass.tempB = null;
+  
+  if (next === "compass") {
+    els.compassPanel.style.display = "";
+    populateCompassNodeSelects();
+  } else {
+    els.compassPanel.style.display = "none";
   }
 
   // 여기 두 줄이 맨 끝에 오도록
@@ -1276,14 +1319,41 @@ document.querySelectorAll(".toolbtn[data-tool]").forEach((btn) => {
 // --------------------------------------------------------
 // ------------------ azimuth calculate -------------------
 
-function computeAzimuthDeg(A, B) {
-  // 북(위)=0°, 시계방향 + (브라우저 y축이 아래로 증가하므로 -dy 사용)
-  const dx = B.x - A.x;
-  const dy = B.y - A.y;
-  let deg = (Math.atan2(dx, -dy) * 180) / Math.PI;
-  if (deg < 0) deg += 360;
-  return +deg.toFixed(1);
-}
+// function computeAzimuthDeg(A, B) {
+//   // 북(위)=0°, 시계방향 + (브라우저 y축이 아래로 증가하므로 -dy 사용)
+//   const dx = B.x - A.x;
+//   const dy = B.y - A.y;
+//   let deg = (Math.atan2(dx, -dy) * 180) / Math.PI;
+//   if (deg < 0) deg += 360;
+//   return +deg.toFixed(1);
+// }
+
+els.btnCompassApply.addEventListener("click", () => {
+  const a = els.compassFrom.value;
+  const b = els.compassTo.value;
+  const az = parseFloat(els.compassAz.value);
+  if (!a || !b || a === b) {
+    els.compassInfo.textContent = "서로 다른 두 노드를 선택하세요.";
+    return;
+  }
+  if (Number.isNaN(az) || az < 0 || az >= 360) {
+    els.compassInfo.textContent = "Azimuth는 0 이상 360 미만으로 입력하세요.";
+    return;
+  }
+  state.northRef = { from_node: a, to_node: b, azimuth: +az.toFixed(1) };
+  els.compassInfo.textContent = `설정됨: ${a} → ${b}, ${state.northRef.azimuth}°`;
+  els.projState.textContent = "상태: 수정됨";
+  els.projState.style.color = "#e67e22";
+});
+
+els.btnCompassClear.addEventListener("click", () => {
+  state.northRef = { from_node: null, to_node: null, azimuth: 0 };
+  els.compassAz.value = "";
+  populateCompassNodeSelects();
+  els.projState.textContent = "상태: 수정됨";
+  els.projState.style.color = "#e67e22";
+});
+
 
 // ----------------------------------------------------
 // ------------------ save function -------------------
@@ -1317,7 +1387,8 @@ async function readBlobFile(dirHandle, filename) {
   return f;
 }
 async function saveProjectToDirectory() {
-  if (!window.showDirectoryPicker) throw new Error("Directory picker not available");
+  if (!window.showDirectoryPicker)
+    throw new Error("Directory picker not available");
 
   // 1) 사용자에게 '기본 경로'만 고르게 함 (여기에 프로젝트 폴더를 만들 것)
   const baseDir = await window.showDirectoryPicker({ mode: "readwrite" });
@@ -1325,6 +1396,8 @@ async function saveProjectToDirectory() {
   // 2) 프로젝트 이름 폴더 만들기 (이미 있으면 그대로 사용: 덮어쓰기 동작)
   const projName = getProjectName();
   const projDir = await baseDir.getDirectoryHandle(projName, { create: true });
+
+  const projAuthor = document.getElementById("projectAuthor")?.value;
 
   // 3) images/ 하위 폴더 확보
   const imgDir = await projDir.getDirectoryHandle("images", { create: true });
@@ -1344,10 +1417,12 @@ async function saveProjectToDirectory() {
     // 확장자 추론 (기본 png)
     const ext = label.includes(".") ? label.split(".").pop() : "png";
     const safeName = sanitizeName(label) || `floor_${i + 1}.${ext}`;
-    const filename = safeName.endsWith("." + ext) ? safeName : `${safeName}.${ext}`;
+    const filename = safeName.endsWith("." + ext)
+      ? safeName
+      : `${safeName}.${ext}`;
 
     // ObjectURL → Blob 변환 후 저장 (동일 파일명은 덮어씀)
-    const blob = await fetch(url).then(r => r.blob());
+    const blob = await fetch(url).then((r) => r.blob());
     const fh = await imgDir.getFileHandle(filename, { create: true });
     const w = await fh.createWritable();
     await w.write(blob);
@@ -1365,19 +1440,21 @@ async function saveProjectToDirectory() {
     currentFloor: state.currentFloor,
     scale: state.scale,
     projectName: projName,
+    projectAuthor: projAuthor,
   };
 
   // 6) graph.json 저장 (프로젝트 폴더 직하)
   const graphFh = await projDir.getFileHandle("graph.json", { create: true });
   const gw = await graphFh.createWritable();
-  await gw.write(new Blob([JSON.stringify(json, null, 2)], { type: "application/json" }));
+  await gw.write(
+    new Blob([JSON.stringify(json, null, 2)], { type: "application/json" })
+  );
   await gw.close();
 
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
   els.status.textContent = `저장 완료: ${projName}/ (images + graph.json)`;
 }
-
 
 // reformat the data
 function serializeToInstarFormat() {
@@ -1436,7 +1513,8 @@ function serializeToInstarFormat() {
 
 // loading the saved files
 async function openProjectFromDirectory() {
-  if (!window.showDirectoryPicker) throw new Error("Directory picker not available");
+  if (!window.showDirectoryPicker)
+    throw new Error("Directory picker not available");
   const dir = await window.showDirectoryPicker({ mode: "read" });
 
   // graph.json 읽기
@@ -1450,14 +1528,20 @@ async function openProjectFromDirectory() {
   // 이미지 복원
   const imgMap = json.images || {};
   let imgDir = null;
-  try { imgDir = await dir.getDirectoryHandle("images"); } catch (e) { imgDir = null; }
+  try {
+    imgDir = await dir.getDirectoryHandle("images");
+  } catch (e) {
+    imgDir = null;
+  }
 
   for (const k of Object.keys(imgMap)) {
     const rel = imgMap[k];
     const idx = Number(k);
     if (!rel || !imgDir) {
       if (state.images[idx]) {
-        try { URL.revokeObjectURL(state.images[idx]); } catch (_) {}
+        try {
+          URL.revokeObjectURL(state.images[idx]);
+        } catch (_) {}
         delete state.images[idx];
       }
       const pill = document.getElementById("fileName_" + idx);
@@ -1474,12 +1558,6 @@ async function openProjectFromDirectory() {
     if (pill) pill.textContent = filename;
   }
 
-  // 프로젝트 이름 표시(있다면)
-  if (json.meta?.projectName) {
-    if (els.projName) els.projName.value = json.meta.projectName;
-    state.projectName = json.meta.projectName;
-  }
-
   // 화면 갱신
   buildStartFloorOptions?.(state.floors);
   renderFloor?.();
@@ -1487,9 +1565,10 @@ async function openProjectFromDirectory() {
 
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
-  els.status.textContent = `열기 완료: ${(json.meta?.projectName || "프로젝트")}/`;
+  els.status.textContent = `열기 완료: ${
+    json.meta?.projectName || "프로젝트"
+  }/`;
 }
-
 
 function applyFromInstarFormat(json) {
   // scale
@@ -1546,8 +1625,18 @@ function applyFromInstarFormat(json) {
 
   // 적용
   state.graph = { nodes, links };
-  // (층/배경이미지 스키마는 요구 포맷에 없으니, 현재 층만 그대로 유지)
-  // UI 갱신
+
+  if (json.meta) {
+    if (json.meta?.projectName != null)
+      state.projectName = json.meta.projectName || "새 프로젝트";
+    if (json.meta?.projectAuthor != null)
+      state.projectAuthor = json.meta.projectAuthor || "";
+  }
+  if (els.projName)
+    els.projName.textContent = "이름: " + (state.projectName || "새 프로젝트");
+  if (els.projAuthor)
+    els.projAuthor.textContent = "작성자: " + (state.projectAuthor || "-");
+
   clearSelection?.();
   updateLayersPanel?.();
   redrawOverlay?.();
@@ -1565,7 +1654,9 @@ els.btnSave.addEventListener("click", async () => {
       // 폴백: 기존 JSON만 저장 (폴더 미지원 브라우저)
       const data = serializeToInstarFormat();
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      a.href = URL.createObjectURL(
+        new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+      );
       a.download = "graph.json";
       a.click();
       URL.revokeObjectURL(a.href);
