@@ -252,7 +252,7 @@ input[type="text"] {
 }
 .modal {
   width: min(900px, 96vw);
-  max-height: 90vh;
+  height: min(600px, 90vh);
   overflow: auto;
   background: #fff;
   border-radius: 16px;
