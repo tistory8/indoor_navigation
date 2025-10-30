@@ -73,7 +73,8 @@ const els = {
   linkType: document.getElementById("linkType"),
 };
 
-// ------- Helpers -------
+// ---------------------------------------
+// ------------- Helpers -----------------
 function setEnabled(enabled) {
   document.querySelectorAll(".toolbtn").forEach((b) => (b.disabled = !enabled));
   [
@@ -400,6 +401,25 @@ function drawSnapGuide(svg, guide) {
   svg.appendChild(gl);
 }
 
+function snapToAxisOfExisting(px, py, tol = 8) {
+  let outX = px,
+    outY = py,
+    best = Infinity;
+  for (const n of state.graph.nodes) {
+    const dx = Math.abs(px - n.x);
+    const dy = Math.abs(py - n.y);
+    if (dx <= tol && dx < best) {
+      outX = n.x;
+      best = dx;
+    }
+    if (dy <= tol && dy < best) {
+      outY = n.y;
+      best = dy;
+    }
+  }
+  return { x: outX, y: outY };
+}
+
 function redrawOverlay() {
   const svg = els.overlay;
   const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
@@ -421,23 +441,64 @@ function redrawOverlay() {
     const a = state.graph.nodes.find((n) => n.id === lk.a);
     const b = state.graph.nodes.find((n) => n.id === lk.b);
     if (!a || !b) continue;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", a.x);
-    line.setAttribute("y1", a.y);
-    line.setAttribute("x2", b.x);
-    line.setAttribute("y2", b.y);
-    line.classList.add("link-line");
-    if (state.selection.type === "link" && state.selection.id === lk.id) {
-      line.classList.add("selected");
-    }
-    line.dataset.id = lk.id;
-    line.addEventListener("click", (e) => {
-      if (state.tool === "select") {
+
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const hit = document.createElementNS("http://www.w3.org/2000/svg", "line");
+
+    hit.classList.add("link-hit");
+    hit.setAttribute("x1", a.x);
+    hit.setAttribute("y1", a.y);
+    hit.setAttribute("x2", b.x);
+    hit.setAttribute("y2", b.y);
+    hit.setAttribute("pointer-events", "stroke");
+    hit.setAttribute("stroke", "transparent");
+    hit.setAttribute("stroke-width", "14"); // 넉넉한 히트박스
+    hit.dataset.id = lk.id;
+    hit.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (state.tool !== "select") return;
         e.stopPropagation();
+        e.preventDefault();
         selectLink(lk.id);
-      }
-    });
-    svg.appendChild(line);
+      },
+      { passive: false }
+    );
+
+    // ② 실제 보이는 라인
+    const vis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    vis.classList.add("link-line");
+    vis.setAttribute("x1", a.x);
+    vis.setAttribute("y1", a.y);
+    vis.setAttribute("x2", b.x);
+    vis.setAttribute("y2", b.y);
+    vis.dataset.id = lk.id;
+    if (state.selection?.type === "link" && state.selection.id === lk.id) {
+      vis.classList.add("selected");
+    }
+
+    g.appendChild(hit);
+    g.appendChild(vis);
+    svg.appendChild(g);
+    // const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    // line.setAttribute("x1", a.x);
+    // line.setAttribute("y1", a.y);
+    // line.setAttribute("x2", b.x);
+    // line.setAttribute("y2", b.y);
+    // line.classList.add("link-line");
+    // line.setAttribute("pointer-events", "stroke");
+    // line.setAttribute("stroke-width", "6");
+    // if (state.selection.type === "link" && state.selection.id === lk.id) {
+    //   line.classList.add("selected");
+    // }
+    // line.dataset.id = lk.id;
+    // line.addEventListener("click", (e) => {
+    //   if (state.tool === "select") {
+    //     e.stopPropagation();
+    //     selectLink(lk.id);
+    //   }
+    // });
+    // svg.appendChild(line);
   }
 
   // nodes
@@ -467,7 +528,9 @@ function redrawOverlay() {
     });
     c.addEventListener("pointerdown", (e) => {
       if (state.tool !== "select") return;
+      e.stopPropagation();
       e.preventDefault();
+      selectNode(n.id);
       const { x, y } = imagePointFromClient(e);
       draggingNodeId = n.id;
       dragStart = { x, y };
@@ -870,7 +933,6 @@ els.overlay.addEventListener("click", (ev) => {
   if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
 
   if (state.tool === "node") {
-    let { x, y } = imagePointFromClient(ev);
     if (state.keys.shift && state.graph.nodes.length) {
       const last = state.graph.nodes[state.graph.nodes.length - 1];
       const dx = Math.abs(x - last.x);
@@ -878,6 +940,7 @@ els.overlay.addEventListener("click", (ev) => {
       if (dx >= dy) y = last.y;
       else x = last.x; // 수평/수직 스냅
     }
+    // ({ x, y } = snapToAxisOfExisting(x, y, 8));
     const newNode = {
       id: `n_${Math.random().toString(36).slice(2, 8)}`,
       name: "",
@@ -887,7 +950,7 @@ els.overlay.addEventListener("click", (ev) => {
     state.graph.nodes.push(newNode);
     selectNode(newNode.id);
     redrawOverlay();
-  } else if (state.tool === "select") {
+  } else if (state.tool === "select" && ev.target === els.overlay) {
     clearSelection();
   }
 });
