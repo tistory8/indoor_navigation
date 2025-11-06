@@ -51,13 +51,26 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
+DB_ENGINE = os.getenv("DB_ENGINE", "sqlite")
 # A안에서는 DB 안 씀. 기본 sqlite 설정은 있어도 무방.
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'noop.sqlite3',
+if DB_ENGINE == "postgres":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("POSTGRES_DB", "indoor"),
+            "USER": os.getenv("POSTGRES_USER", "indoor"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
+            "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
+            "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / os.getenv("SQLITE_NAME", "db.sqlite3"),
+        }
+    }
 
 STATIC_URL = '/static/'
 
@@ -67,3 +80,5 @@ CORS_ALLOW_ALL_ORIGINS = True
 # 미디어 (A안에선 사용 안 함)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+

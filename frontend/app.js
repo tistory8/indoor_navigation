@@ -1,5 +1,98 @@
-// ------- App State -------
+// --------------------------------------------------------------
+// ------------------------- Django Proejct ---------------------
+const API_BASE = "http://127.0.0.1:8000/api";
+
+// 서버에 새 프로젝트 저장 (Instar JSON 그대로)
+async function apiCreateProject(instarJson) {
+  const res = await fetch(`${API_BASE}/projects/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(instarJson),
+  });
+  return res.json(); // { id, ...instarJson }
+}
+
+async function apiUpdateProject(id, instarJson) {
+  const res = await fetch(`${API_BASE}/projects/${id}/`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(instarJson),
+  });
+  return res.json();
+}
+
+async function apiGetProject(id) {
+  const res = await fetch(`${API_BASE}/projects/${id}/`);
+  return res.json();
+}
+
+async function apiListProjects() {
+  const res = await fetch(`${API_BASE}/projects/`);
+  return res.json();
+}
+
+// 프로젝트 삭제(DELETE /projects/:id)
+async function apiDeleteProject(id) {
+  const res = await fetch(`${API_BASE}/projects/${id}/`, { method: "DELETE" });
+  return res.json();
+}
+
+function collectProjectSettingsFromForm() {
+  // 실제 폼 id/name은 네 index.html에 맞춰 수정해.
+  const name = document.querySelector('#projName').value?.trim() || '새 프로젝트';
+  const floors = parseInt(document.querySelector('#floorCount').value || '1', 10);
+  const startFloor = parseInt(document.querySelector('#startFloor').value || '1', 10);
+  const scale = parseFloat(document.querySelector('#scale').value || '0') || 0;
+
+  // 층별 이미지 초기화 (배경 이미지는 확인 후 업로드 기능 붙일 때 URL 채움)
+  const images = Array.from({ length: floors }, () => null);
+
+  // 에디터가 기대하는 Instar 포맷의 최소 구조
+  return {
+    meta: { projectName: name, projectAuthor: '' },
+    scale,
+    // 네가 이미 쓰는 내부 구조가 있다면 serialize 함수에서 덮어쓴다.
+    nodes: {},
+    connections: {},
+    special_points: {},
+    north_reference: null, // {from_node, to_node, azimuth} 붙일 예정이면 남겨둠
+    images,
+    // 선택: 초기 값들 (시작층 등)도 meta 아래에 보관해도 무방
+    startFloor,
+  };
+}
+
+// 확인 버튼 핸들러
+async function onProjectCreateConfirm() {
+  try {
+    const payload = collectProjectSettingsFromForm();
+
+    // ✅ 새 프로젝트를 DB에 즉시 저장
+    const saved = await apiCreateProject(payload);
+
+    // 발급된 id 보관
+    state.projectId = saved.id;
+    state.modified = false;
+
+    // 에디터 화면을 초기화/세팅
+    hydrateEditorFromInstar(saved); // 이미 있는 함수면 사용, 아니면 작성(아래 참고)
+
+    // UI 상태 갱신(프로젝트명/저장됨 배지 등)
+    updateProjectHeader(saved.meta?.projectName || '새 프로젝트', '저장됨');
+
+    console.log('프로젝트 생성/저장 완료:', saved);
+  } catch (err) {
+    console.error('프로젝트 생성 실패:', err);
+    alert('프로젝트 생성에 실패했습니다.');
+  }
+}
+
+// --------------------------------------
+// ------------ App State ---------------
 const state = {
+  projectId: null,
+  modified: false,
+
   loaded: false,
   projectName: "새 프로젝트",
   projectAuthor: "",
@@ -42,6 +135,7 @@ const els = {
   btnNew: document.getElementById("btnNew"),
   btnOpen: document.getElementById("btnOpen"),
   btnSave: document.getElementById("btnSave"),
+  btnExport: document.getElementById("btnExport"),
   floorSelect: document.getElementById("floorSelect"),
   btnLoadBg: document.getElementById("btnLoadBg"),
   btnClearBg: document.getElementById("btnClearBg"),
@@ -116,6 +210,7 @@ function setEnabled(enabled) {
     if (e) e.disabled = !enabled;
   });
   els.btnSave.disabled = !enabled;
+  els.btnExport.disabled = !enabled;
 
   els.btnOpen?.removeAttribute("disabled");
   els.btnOpen.disabled = false;
@@ -784,6 +879,8 @@ function hasLinkBetween(a, b) {
 }
 
 let pendingLinkFrom = null;
+let lk_n = 0;
+
 function handleLinkPick(nodeId) {
   if (!pendingLinkFrom) {
     pendingLinkFrom = nodeId;
@@ -815,11 +912,13 @@ function handleLinkPick(nodeId) {
     }
 
     const newLink = {
-      id: `lk_${Math.random().toString(36).slice(2, 8)}`,
+      id: `lk_${lk_n}`,
       floor: state.currentFloor,
       a: pendingLinkFrom,
       b: nodeId,
     };
+    lk_n = lk_n + 1;
+
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
     selectLink(newLink.id);
@@ -888,25 +987,64 @@ els.modalReset.addEventListener("click", () => {
   buildFloorFileRows();
 });
 
-els.modalOk.addEventListener("click", () => {
-  // read settings
-  // state.mode = els.mode.value;
-  state.floors = Math.max(
-    1,
-    Math.min(12, parseInt(els.floorCount.value || "1", 10))
-  );
-  state.startFloor = parseInt(els.startFloor.value || "0", 10);
-  state.scale = parseFloat(els.scale.value || "0.33167");
-  state.currentFloor = state.startFloor;
-  els.projName.textContent = els.projectName.value;
-  els.projAuthor.textContent = els.projectAuthor.value;
-  els.projState.textContent = "상태: 저장됨";
-  els.projState.style.color = "#27ae60";
-  closeModal();
-  activateProject();
-  state.graph = { nodes: [], links: [] };
-  clearSelection();
+// ✅ 모달 확인 → 새 프로젝트 생성 + DB 저장
+els.modalOk.addEventListener("click", async () => {
+  // 버튼 중복 클릭 방지
+  els.modalOk.disabled = true;
+
+  try {
+    // 1) 폼 값 읽기 + 정리
+    const floors = Math.max(1, Math.min(12, parseInt(els.floorCount.value || "1", 10)));
+    const startFloor = parseInt(els.startFloor.value || "1", 10);
+    const scale = parseFloat(els.scale.value || "0.33167") || 0.33167;
+    const projectName = (els.projectName.value || "새 프로젝트").trim();
+    const projectAuthor = (els.projectAuthor?.value || "").trim();
+
+    // 2) Instar 포맷 payload (최소 필드)
+    const payload = {
+      meta: { projectName, projectAuthor },
+      scale,
+      nodes: {},                 // 에디터 로직에 맞춰 객체 or 배열 사용
+      connections: {},
+      special_points: {},
+      north_reference: null,     // 북방위 기능 붙이면 {from_node,to_node,azimuth}
+      images: Array.from({ length: floors }, () => null),
+      startFloor,
+    };
+
+    // 3) 서버에 생성(POST /api/projects/)
+    const saved = await apiCreateProject(payload); // ← 이미 너가 만든 래퍼
+    // saved = { id, ...payload }
+
+    // 4) 전역 상태/UI 반영
+    state.projectId = saved.id;         // ✅ DB id 보관 (이후 PUT에 사용)
+    state.floors = floors;
+    state.startFloor = startFloor;
+    state.scale = scale;
+    state.currentFloor = startFloor;
+    state.graph = { nodes: [], links: [] }; // 네 기존 편집 상태 초기화 유지
+    state.modified = false;
+
+    // 헤더/상태표시
+    els.projName.textContent = projectName;
+    els.projAuthor.textContent = projectAuthor;
+    els.projState.textContent = "상태: 저장됨";
+    els.projState.style.color = "#27ae60";
+
+    // 5) 에디터 초기화 (네가 쓰는 함수명으로 대체 가능)
+    clearSelection();
+    activateProject(); // 기존 흐름 유지
+    closeModal();
+
+    console.log("프로젝트 생성/저장 완료:", saved);
+  } catch (err) {
+    console.error("프로젝트 생성 실패:", err);
+    alert("프로젝트 생성에 실패했습니다. 콘솔을 확인해 주세요.");
+  } finally {
+    els.modalOk.disabled = false;
+  }
 });
+
 
 els.floorSelect.addEventListener("change", (e) => {
   state.currentFloor = parseInt(e.target.value, 10);
@@ -1026,6 +1164,7 @@ els.overlay.addEventListener("pointermove", (ev) => {
 });
 
 let lpStartClient = null;
+let nd_n = 0;
 
 els.overlay.addEventListener(
   "pointerdown",
@@ -1065,12 +1204,13 @@ els.overlay.addEventListener(
     }
 
     const newNode = {
-      id: `n_${Math.random().toString(36).slice(2, 8)}`,
+      id: `N_${nd_n}`,
       name: "",
       floor: state.currentFloor + 1,
       x,
       y,
     };
+    nd_n = nd_n + 1;
     state.graph.nodes.push(newNode);
     selectNode(newNode.id);
     redrawOverlay();
@@ -1451,6 +1591,9 @@ async function saveProjectToDirectory() {
   );
   await gw.close();
 
+  const saved = await apiUpdateProject(state.projectId, json);
+  state.modified = false;
+
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
   els.status.textContent = `저장 완료: ${projName}/ (images + graph.json)`;
@@ -1570,6 +1713,7 @@ async function openProjectFromDirectory() {
   }/`;
 }
 
+
 function applyFromInstarFormat(json) {
   // scale
   if (typeof json.scale === "number") {
@@ -1600,10 +1744,11 @@ function applyFromInstarFormat(json) {
       if (seen.has(key)) continue;
       if (!nodes.find((n) => n.id === a) || !nodes.find((n) => n.id === b))
         continue;
-      links.push({ id: `lk_${Math.random().toString(36).slice(2, 8)}`, a, b });
+      links.push({ id: `lk_${lk_n}`, a, b });
       seen.add(key);
     }
   }
+  lk_n = lk_n + 1;
 
   // special_points → 노드에 special_id 주입(노드에도 이미 있을 수 있음)
   if (json.special_points) {
@@ -1645,8 +1790,61 @@ function applyFromInstarFormat(json) {
 }
 
 // connect function and save button
-// 저장
+// 저장(DB)
+function buildImagesFieldForDB() {
+  // 파일 자체는 아직 서버에 업로드하지 않으므로,
+  // 사용자가 고른 파일 "이름"만 임시로 저장 (없으면 null)
+  const out = {};
+  for (let i = 0; i < (state.floors || 0); i++) {
+    const pill = document.getElementById("fileName_" + i);
+    const label = (pill?.textContent || "").trim();
+    out[i] = label && label !== "이미지 없음" ? label : null;
+  }
+  return out;
+}
+
 els.btnSave.addEventListener("click", async () => {
+  try {
+    if (!state.projectId) {
+      alert("저장할 프로젝트가 없습니다. 먼저 새 프로젝트를 생성하세요.");
+      return;
+    }
+
+    // 에디터 상태 → Instar 포맷
+    const data = serializeToInstarFormat();
+
+    // DB에 메타/스케일/시작층도 함께 보관
+    data.meta = {
+      projectName: getProjectName(),
+      projectAuthor:
+        (els.projAuthor?.textContent || "").replace(/^작성자:\s*/, "") ||
+        (els.projectAuthor?.value || "") ||
+        "",
+    };
+    data.scale = Number(state.scale) || Number(els.scale?.value) || 0;
+    data.startFloor = state.startFloor ?? 1;
+
+    // ⚠️ 이미지: 아직 서버 업로드 API가 없으니, DB에는 파일명(라벨)만 임시 저장
+    // (ObjectURL은 재실행 시 무효이므로 저장 X)
+    data.images = buildImagesFieldForDB();
+
+    const saved = await apiUpdateProject(state.projectId, data);
+
+    state.modified = false;
+    els.projState.textContent = "상태: 저장됨";
+    els.projState.style.color = "#27ae60";
+    els.status.textContent = `DB 저장 완료 (id: ${saved.id})`;
+    console.log("DB 저장 완료:", saved);
+  } catch (e) {
+    console.error(e);
+    els.status.textContent = "DB 저장 실패";
+    alert("DB 저장에 실패했습니다. 콘솔을 확인해 주세요.");
+  }
+});
+
+
+// 내보내기
+els.btnExport.addEventListener("click", async () => {
   try {
     if (window.showDirectoryPicker) {
       await saveProjectToDirectory();
