@@ -1,4 +1,4 @@
-// js/app_projects.js
+// js/projects.js
 import { apiListProjects, apiCreateProject, apiDeleteProject } from "./api.js";
 import { gotoEditor } from "./common.js";
 
@@ -10,8 +10,8 @@ const els = {
 };
 
 function cardTpl(p) {
-  const thumb = p?.meta?.thumbnail || "";
-  const name = p?.meta?.projectName || p.name || "Untitled";
+  const thumb = p?.thumbnail || "";
+  const name = p?.projectName || p.name || "Untitled";
   const dt = p.updated_at ? new Date(p.updated_at) : null;
   const when = dt ? `Last edited on ${dt.toDateString()}` : "";
   return `

@@ -53,7 +53,22 @@ ASGI_APPLICATION = 'config.asgi.application'
 
 DB_ENGINE = os.getenv("DB_ENGINE", "sqlite")
 # A안에서는 DB 안 씀. 기본 sqlite 설정은 있어도 무방.
-if DB_ENGINE == "postgres":
+if os.getenv("DB_ENGINE") == "mysql":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.mysql",
+            "NAME": os.getenv("MYSQL_DB", "mapeditor"),
+            "USER": os.getenv("MYSQL_USER", "mapuser"),
+            "PASSWORD": os.getenv("MYSQL_PASSWORD", ""),
+            "HOST": os.getenv("MYSQL_HOST", "127.0.0.1"),
+            "PORT": os.getenv("MYSQL_PORT", "3306"),
+            "OPTIONS": {
+                "charset": "utf8mb4",
+                "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+        }
+    }
+elif DB_ENGINE == "postgres":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",

@@ -116,7 +116,7 @@ body.page-projects{
 /* 썸네일 영역: 고정 비율(16:11) */
 .proj-card .thumb, .proj-grid > div .thumb{
   aspect-ratio: 16/11;
-  background: linear-gradient(180deg, rgba(0,0,0,.02), rgba(0,0,0,.04)),
+  background: linear-gradient(180deg, rgba(255, 255, 255), rgba(255, 255, 255)),
               var(--bg);
   border-bottom:1px solid var(--line);
   display:flex; align-items:center; justify-content:center;

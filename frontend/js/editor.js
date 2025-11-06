@@ -137,6 +137,12 @@ const state = {
     cand: { v: null, h: null }, // { v:{x,ax,ay,dx}, h:{y,ax,ay,dy} }
   },
   compass: { picking: null, tempA: null, tempB: null },
+
+  // 층별 표시용 시퀀스 (노드/링크)
+  seq: {
+    node: {}, // floor(int) -> max nseq
+    link: {}, // floor(int) -> max lseq
+  },
 };
 state.mouse = { x: 0, y: 0 };
 
@@ -304,7 +310,9 @@ function buildFloorFileRows() {
   }
 }
 function renderFloor() {
-  const url = state.images[state.currentFloor];
+  const f = currentFloor();
+  const url = state.images?.[f] || "";
+
   if (url) {
     els.bgImg.src = url;
     els.bgImg.style.display = "block";
@@ -318,8 +326,104 @@ function renderFloor() {
   }
   els.selLbl.textContent = els.floorLbl.textContent =
     "🏢 층: " + (state.currentFloor + 1);
+}
+function currentFloor() {
+  // (레거시 호환) state.currentfloor 사용 중이면 그 값을 우선
+  return Number(state.currentFloor ?? state.currentfloor ?? 0);
+}
+function nodesOnFloor(f) {
+  return (state.graph.nodes || []).filter((n) => (n.floor ?? 0) === f);
+}
+function linksOnFloor(f) {
+  return (state.graph.links || []).filter((l) => (l.floor ?? 0) === f);
+}
 
-  // redrawOverlay();
+function nextNodeSeq(floor) {
+  const f = Number(floor);
+  const m = state.seq.node;
+  m[f] = (m[f] || 0) + 1;
+  return m[f];
+}
+
+function nextLinkSeq(floor) {
+  const f = Number(floor);
+  const m = state.seq.link;
+  m[f] = (m[f] || 0) + 1;
+  return m[f];
+}
+
+// 사용자 입력 name이 있으면 그걸, 없으면 층별 번호 nseq, 그래도 없으면 id
+function nodeLabel(n) {
+  const nm = (n?.name || "").trim();
+  if (nm) return nm;
+  if (Number.isInteger(n?.nseq) && n.nseq > 0) return `N_${n.nseq}`;
+  return String(n?.id ?? "");
+}
+
+// 링크 라벨은 노드와 독립적으로 "lk_{lseq}"만 사용 (번호 충돌/혼동 방지)
+function linkLabel(l) {
+  if (Number.isInteger(l?.lseq) && l.lseq > 0) return `lk_${l.lseq}`;
+  return String(l?.id ?? "");
+}
+function linkEndpointsLabel(l, nodes) {
+  // 같은 층의 노드 배열에서 id로 찾기
+  const a = nodes.find(nn => String(nn.id) === String(l.a));
+  const b = nodes.find(nn => String(nn.id) === String(l.b));
+  if (!a || !b) return ""; // 가드
+  return `${nodeLabel(a)} → ${nodeLabel(b)}`;
+}
+
+function rebuildSeqFromData() {
+  // 데이터에 이미 nseq/lseq가 있으면 그 최대값으로 복구,
+  // 없으면 생성 순서대로 부여
+  state.seq = state.seq || { node: {}, link: {} };
+  state.seq.node = {};
+  state.seq.link = {};
+
+  // --- 노드 ---
+  // floor별로 그룹핑하고, 각 floor에서 n.nseq 최대값 계산
+  const groupedNodes = new Map(); // floor -> [nodes...]
+  for (const n of state.graph.nodes || []) {
+    const f = Number(n.floor ?? 0);
+    if (!groupedNodes.has(f)) groupedNodes.set(f, []);
+    groupedNodes.get(f).push(n);
+  }
+  for (const [f, arr] of groupedNodes) {
+    let maxSeq = 0;
+    // 이미 nseq가 있으면 그걸 우선 신뢰
+    for (const n of arr) {
+      if (Number.isInteger(n.nseq) && n.nseq > maxSeq) maxSeq = n.nseq;
+    }
+    // 없는 노드에는 생성 순서대로 부여
+    for (const n of arr) {
+      if (!Number.isInteger(n.nseq) || n.nseq <= 0) {
+        maxSeq += 1;
+        n.nseq = maxSeq;
+      }
+    }
+    state.seq.node[f] = maxSeq;
+  }
+
+  // --- 링크 ---
+  const groupedLinks = new Map();
+  for (const l of state.graph.links || []) {
+    const f = Number(l.floor ?? 0);
+    if (!groupedLinks.has(f)) groupedLinks.set(f, []);
+    groupedLinks.get(f).push(l);
+  }
+  for (const [f, arr] of groupedLinks) {
+    let maxSeq = 0;
+    for (const l of arr) {
+      if (Number.isInteger(l.lseq) && l.lseq > maxSeq) maxSeq = l.lseq;
+    }
+    for (const l of arr) {
+      if (!Number.isInteger(l.lseq) || l.lseq <= 0) {
+        maxSeq += 1;
+        l.lseq = maxSeq;
+      }
+    }
+    state.seq.link[f] = maxSeq;
+  }
 }
 
 // ----------------------------------------------
@@ -678,20 +782,12 @@ function snapToAxisOfExisting(px, py, tol = 8) {
   return { x: outX, y: outY };
 }
 
-function getNodeLabelById(id) {
-  const n = state.graph.nodes.find((nn) => nn.id === id);
-  const name = (n?.name || "").trim();
-  return name ? name : id;
-}
-
 function redrawOverlay() {
   const svg = els.overlay;
+
   const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
   const natH = els.bgImg.naturalHeight || els.bgImg.height || 1;
 
-  // ✅ 내부 좌표계를 '자연 해상도'로 고정
-  // svg.style.left = `0px`;
-  // svg.style.top = `0px`;
   svg.style.width = `${natW}px`;
   svg.style.height = `${natH}px`;
   svg.setAttribute("viewBox", `0 0 ${natW} ${natH}`);
@@ -701,7 +797,10 @@ function redrawOverlay() {
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
   // links
-  for (const lk of state.graph.links) {
+  const currentFloorLinks = state.graph.links.filter(
+    (lk) => (lk.floor ?? 0) === state.currentFloor
+  );
+  for (const lk of currentFloorLinks) {
     const a = state.graph.nodes.find((n) => n.id === lk.a);
     const b = state.graph.nodes.find((n) => n.id === lk.b);
     if (!a || !b) continue;
@@ -716,7 +815,7 @@ function redrawOverlay() {
     hit.setAttribute("y2", b.y);
     hit.setAttribute("pointer-events", "stroke");
     hit.setAttribute("stroke", "transparent");
-    hit.setAttribute("stroke-width", "14"); // 넉넉한 히트박스
+    hit.setAttribute("stroke-width", "14");
     hit.dataset.id = lk.id;
     hit.addEventListener(
       "pointerdown",
@@ -747,7 +846,10 @@ function redrawOverlay() {
   }
 
   // nodes
-  for (const n of state.graph.nodes) {
+  const currentFloorNodes = state.graph.nodes.filter(
+    (n) => (n.floor ?? 0) === state.currentFloor
+  );
+  for (const n of currentFloorNodes) {
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("cx", n.x);
     c.setAttribute("cy", n.y);
@@ -868,57 +970,74 @@ function applyViewTransform() {
 }
 
 function updateLayersPanel() {
-  const panel = document.getElementById("layersList");
-  if (!panel) return;
+  const f = currentFloor();
 
-  panel.innerHTML = "";
+  const allNodes = state.graph?.nodes || [];
+  const allLinks = state.graph?.links || [];
 
-  const items = [];
+  const nodesF = nodesOnFloor(f);
+  const linksF = linksOnFloor(f);
 
-  // 1) Nodes
-  for (const n of state.graph.nodes) {
-    items.push({
-      id: n.id,
-      type: "node",
-      label: `🔵 ${n.name || n.id}`,
-      meta: `(${Math.round(n.x)}, ${Math.round(n.y)})`,
-      active: state.selection?.type === "node" && state.selection?.id === n.id,
-      onClick: () => selectNode(n.id),
-    });
-  }
+  // 우측 상단 카운트들 (현재 층 / 전체)
+  if (els.infoCurrentNodes) els.infoCurrentNodes.textContent = String(nodesF.length);
+  if (els.infoCurrentLinks) els.infoCurrentLinks.textContent = String(linksF.length);
+  if (els.infoAllNodes)     els.infoAllNodes.textContent     = String(allNodes.length);
+  if (els.infoAllLinks)     els.infoAllLinks.textContent     = String(allLinks.length);
 
-  // 2) Links
-  for (const l of state.graph.links) {
-    const fromText = getNodeLabelById(l.a);
-    const toText = getNodeLabelById(l.b);
-    items.push({
-      id: l.id,
-      type: "link",
-      label: `🔗 ${l.id}`,
-      meta: `${fromText} → ${toText}`,
-      active: state.selection?.type === "link" && state.selection?.id === l.id,
-      onClick: () => selectLink(l.id),
-    });
-  }
+  // 리스트 컨테이너
+  const box = els.layersList || document.getElementById("layersList");
+  if (!box) return;
+  box.innerHTML = ""; // ★ 반드시 비우고 시작(다른 층 잔상 제거)
 
-  if (items.length === 0) {
-    panel.innerHTML = '<div class="muted">아직 생성된 요소가 없습니다.</div>';
-    return;
-  }
+  // 1) 노드 (현재 층 전용)
+  for (const n of nodesF) {
+    const li = document.createElement("div");
+    li.className = "layer-item node";
+    li.dataset.type = "node";
+    li.dataset.id = n.id;
 
-  for (const it of items) {
-    const div = document.createElement("div");
-    div.className = "layer-item" + (it.active ? " active" : "");
+    // 왼쪽 아이콘 + 라벨
     const left = document.createElement("div");
-    left.textContent = it.label;
+    left.className = "layer-left";
+    left.innerHTML = `
+      <span class="dot"></span>
+      <span class="label">🔵 ${nodeLabel(n)}</span>
+    `;
+
+    // 오른쪽 좌표
     const right = document.createElement("div");
-    right.className = "meta";
-    right.textContent = it.meta;
-    div.append(left, right);
-    div.addEventListener("click", it.onClick);
-    panel.appendChild(div);
+    right.className = "layer-right";
+    right.textContent = `(${Math.round(n.x)}, ${Math.round(n.y)})`;
+
+    li.appendChild(left);
+    li.appendChild(right);
+    box.appendChild(li);
+  }
+
+  // 2) 링크 (현재 층 전용)
+  for (const l of linksF) {
+    const li = document.createElement("div");
+    li.className = "layer-item link";
+    li.dataset.type = "link";
+    li.dataset.id = l.id;
+
+    const left = document.createElement("div");
+    left.className = "layer-left";
+    left.innerHTML = `
+      <span class="icon-link"></span>
+      <span class="label">🔗 ${linkLabel(l)}</span>
+    `;
+
+    const right = document.createElement("div");
+    right.className = "layer-right mono small";
+    right.textContent = linkEndpointsLabel(l, nodesF); // 같은 층 노드 기준으로 표시
+
+    li.appendChild(left);
+    li.appendChild(right);
+    box.appendChild(li);
   }
 }
+
 
 function hasLinkBetween(a, b) {
   return state.graph.links.some(
@@ -927,7 +1046,6 @@ function hasLinkBetween(a, b) {
 }
 
 let pendingLinkFrom = null;
-let lk_n = 0;
 
 function handleLinkPick(nodeId) {
   if (!pendingLinkFrom) {
@@ -959,13 +1077,26 @@ function handleLinkPick(nodeId) {
       return;
     }
 
+    const A = state.graph.nodes.find((x) => x.id === pendingLinkFrom);
+    const B = state.graph.nodes.find((x) => x.id === nodeId);
+    if (!A || !B) return;
+
+    // 층 다르면 금지 (원하면 경고)
+    if (Number(A.floor ?? 0) !== Number(B.floor ?? 0)) {
+      els.status.textContent = "서로 다른 층의 노드는 연결할 수 없습니다.";
+      pendingLinkFrom = null;
+      redrawOverlay();
+      return;
+    }
+    const f = Number(A.floor ?? 0);
+
     const newLink = {
-      id: nextLinkId(),
-      floor: state.currentFloor,
-      a: pendingLinkFrom,
-      b: nodeId,
+      id: nextLinkId(), // 내부 고유 id(그대로 유지)
+      floor: f, // ★ 노드 층과 일치
+      lseq: nextLinkSeq(f), // ★ 층별 표기 번호
+      a: A.id,
+      b: B.id,
     };
-    lk_n = lk_n + 1;
 
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
@@ -1086,8 +1217,6 @@ els.modalOk.addEventListener("click", async () => {
     els.projState.style.color = "#27ae60";
 
     // 서버에 이밎 생성(POST /api/projects/)
-    console.log(state);
-    console.log("이미지 저장");
     const inputs = document.querySelectorAll(".floor-file");
     await Promise.all(
       [...inputs].map((inp) => {
@@ -1132,8 +1261,17 @@ els.modalOk.addEventListener("click", async () => {
 });
 
 els.floorSelect.addEventListener("change", (e) => {
-  state.currentFloor = parseInt(e.target.value, 10);
+  state.currentFloor = Number(els.floorSelect.value);
+  state.currentfloor = state.currentFloor; // 혼용 방지
+  
+  // 배경
   renderFloor();
+
+  // 현재층 도형 렌더
+  redrawOverlay();
+
+  // 패널 현재층 기준 변경
+  updateLayersPanel();
 });
 
 els.btnLoadBg.addEventListener("click", () => {
@@ -1249,7 +1387,6 @@ els.overlay.addEventListener("pointermove", (ev) => {
 });
 
 let lpStartClient = null;
-let nd_n = 0;
 
 els.overlay.addEventListener(
   "pointerdown",
@@ -1288,14 +1425,15 @@ els.overlay.addEventListener(
       else x = last.x;
     }
 
+    const f = currentFloor();
     const newNode = {
       id: nextNodeId(),
       name: "",
-      floor: state.currentFloor + 1,
       x,
       y,
+      floor: state.currentFloor,
+      nseq: nextNodeSeq(f), // 층별 표기 번호
     };
-    nd_n = nd_n + 1;
     state.graph.nodes.push(newNode);
     selectNode(newNode.id);
     redrawOverlay();
@@ -1673,13 +1811,26 @@ function serializeToInstarFormat() {
     nodes: nodesObj,
     connections: conn,
   };
-  if (Object.keys(sp).length) out.special_points = sp;
-  if (state.northRef?.from_node && state.northRef?.to_node) {
-    out.north_reference = {
-      ...state.northRef,
-      azimuth: Number(state.northRef.azimuth) || 0,
-    };
-  }
+  
+  out._editor = {
+    floors: state.floors,
+    startFloor: state.startFloor,
+    currentFloor: state.currentFloor,
+    node_meta: Object.fromEntries(
+      (state.graph.nodes || []).map(n => [
+        n.id,
+        { floor: Number(n.floor ?? 0), nseq: Number(n.nseq ?? 0) }
+      ])
+    ),
+    links: (state.graph.links || []).map(l => ({
+      id: l.id,
+      a: l.a,
+      b: l.b,
+      floor: Number(l.floor ?? 0),
+      lseq: Number(l.lseq ?? 0),
+    })),
+  };
+
   return out;
 }
 
@@ -1772,11 +1923,10 @@ function applyFromInstarFormat(json) {
       if (seen.has(key)) continue;
       if (!nodes.find((n) => n.id === a) || !nodes.find((n) => n.id === b))
         continue;
-      links.push({ id: `lk_${lk_n}`, a, b });
+      links.push({ id: nextLinkId(), a, b });
       seen.add(key);
     }
   }
-  lk_n = lk_n + 1;
 
   // special_points → 노드에 special_id 주입(노드에도 이미 있을 수 있음)
   if (json.special_points) {
@@ -1796,8 +1946,52 @@ function applyFromInstarFormat(json) {
       }
     : { from_node: null, to_node: null, azimuth: 0 };
 
-  // 적용
-  state.graph = { nodes, links };
+
+  
+  // --- 편집기 메타 복원 ---
+  const meta = json._editor || {};
+
+  // 1) 노드 메타(floor/nseq) 주입
+  const nodeMeta = meta.node_meta || {};
+  for (const n of nodes) {
+    const m = nodeMeta[n.id];
+    if (m) {
+      if (m.floor != null) n.floor = Number(m.floor);
+      if (m.nseq != null)  n.nseq  = Number(m.nseq);
+    } else {
+      // 없으면 최소 기본값
+      if (n.floor == null) n.floor = Number(json.meta?.startFloor ?? 0);
+    }
+  }
+
+  // 2) 링크: _editor.links가 있으면 그것을 그대로 사용
+  let linksArr = links;
+  if (Array.isArray(meta.links) && meta.links.length) {
+    const ok = [];
+    for (const l of meta.links) {
+      // 노드 존재 검증
+      if (!nodes.find((x) => x.id === l.a) || !nodes.find((x) => x.id === l.b)) continue;
+      ok.push({
+        id: l.id || `lk_${ok.length + 1}`,
+        a: l.a,
+        b: l.b,
+        floor: Number(l.floor ?? 0),
+        lseq: Number(l.lseq ?? 0),
+      });
+    }
+    linksArr = ok;
+  }
+
+  // 3) 층 메타
+  if (Number.isInteger(meta.floors)) state.floors = meta.floors;
+  if (Number.isInteger(meta.startFloor)) state.startFloor = meta.startFloor;
+  if (Number.isInteger(meta.currentFloor)) state.currentFloor = meta.currentFloor;
+
+  // 4) 적용
+  state.graph = { nodes, links: linksArr };
+
+  // 5) 층별 시퀀스 복구(누락 채움)
+  rebuildSeqFromData();
 
   setCountersFromData({
     nodes: Array.isArray(nodes)

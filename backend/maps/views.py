@@ -94,10 +94,25 @@ def projects(request):
     if request.method == "GET":
         out = []
         for p in Project.objects.all().order_by("-updated_at"):
+            thumb_url = ""
+            if isinstance(p.data, dict):
+                images = p.data.get("images") or {}
+                if isinstance(images, dict) and images:
+                    # dict 지원 (혹시 과거 데이터가 dict라면)
+                    first_key = sorted(images.keys(), key=str)[0]
+                    thumb_url = images[first_key] or ""
+                elif isinstance(images, list) and any(images):
+                    # list 지원: 첫 번째 유효 URL
+                    for u in images:
+                        if u:
+                            thumb_url = u
+                            break
+            
             out.append({"id": p.id, 
                         "name": p.name,
                         "slug": p.slug,
                         "updated_at": p.updated_at.isoformat(),
+                        "thumbnail": request.build_absolute_uri(thumb_url),
                         })
         return JsonResponse(out, safe=False)
 
