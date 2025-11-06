@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>실내 지도 에디터 (웹)</title>
+    <link rel="stylesheet" href="css/editor_style.css" />
+    <style></style>
+  </head>
+  <body>
+    <!-- 상단 바 -->
+    <div class="topbar">
+      <button class="btn primary" id="btnNew">새로 만들기</button>
+      <button class="btn" id="btnOpen">열기</button>
+      <button class="btn" id="btnSave" disabled>저장</button>
+      <button class="btn" id="btnExport" disabled>내보내기</button>
+      <div style="flex: 1"></div>
+      <span class="muted" id="zoomLbl">🔍 100%</span>
+      <span class="muted" id="floorLbl" style="margin-left: 8px">🏢 층: -</span>
+      <span class="muted" id="selLbl" style="margin-left: 8px"
+        >👆 선택: 없음</span
+      >
+    </div>
+
+    <div class="toolbar">
+      <button class="toolbtn" data-tool="select">👆</button>
+      <button class="toolbtn" data-tool="node">🔵</button>
+      <button class="toolbtn" data-tool="link">🔗</button>
+      <button class="toolbtn" data-tool="arrow">➡️</button>
+      <button class="toolbtn" data-tool="polygon">📐</button>
+      <button class="toolbtn" data-tool="compass">🧭</button>
+    </div>
+
+    <!-- 3분할 레이아웃 -->
+    <div class="wrap">
+      <!-- 좌측 패널 -->
+      <div class="left card">
+        <!-- <div class="group">
+          <h3>🛠️ 도구</h3>
+          <div class="inner stack8">
+            <button class="toolbtn" data-tool="select">👆 선택 (V)</button>
+            <button class="toolbtn" data-tool="node">🔵 노드 (N)</button>
+            <button class="toolbtn" data-tool="link">🔗 링크 (L)</button>
+            <button class="toolbtn" data-tool="arrow">➡️ 화살표 (A)</button>
+            <button class="toolbtn" data-tool="polygon">📐 폴리곤 (P)</button>
+            <button class="toolbtn" id="btnMove">🖱️ 노드 이동</button>
+          </div>
+        </div> -->
+
+        <div class="group">
+          <h3>🏢 층</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>현재 층</label
+              ><select id="floorSelect" disabled></select>
+            </div>
+            <div class="row">
+              <label>배경 이미지</label
+              ><span class="pill" id="bgName">이미지 없음</span>
+            </div>
+            <div class="row">
+              <button class="btn" id="btnLoadBg" disabled>📁 로드</button>
+              <button class="btn" id="btnClearBg" disabled>🗑️ 제거</button>
+            </div>
+            <button class="btn" id="btnLock" disabled>🔒 이미지 고정</button>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>📑 Layers</h3>
+          <div class="inner" id="layersList">
+            <div class="muted">아직 생성된 요소가 없습니다.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 중앙 캔버스 -->
+      <div class="center">
+        <div id="canvas" class="card">
+          <div id="stage">
+            <img id="bgImg" src="" alt="floor plan" />
+            <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+          <div class="statusbar" id="status">
+            새 프로젝트를 생성하거나 기존 프로젝트를 열어주세요.
+          </div>
+        </div>
+        <div class="empty" id="emptyState">
+          <div class="bubble">
+            새 프로젝트를 생성하거나 기존 프로젝트를 열어주세요<br /><span
+              class="muted"
+              >파일 메뉴에서 ‘새로 만들기’ 또는 ‘열기’를 선택하세요</span
+            >
+          </div>
+        </div>
+      </div>
+
+      <!-- 우측 패널 -->
+      <div class="right card">
+        <div class="group">
+          <h3>📊 현재 층 정보</h3>
+          <div class="inner" id="layerInfo" class="stack8">
+            🔵 노드: 0<br />🔗 링크: 0<br />➡️ 화살표: 0<br />📐 폴리곤: 0
+          </div>
+        </div>
+        <div class="group">
+          <h3>📈 전체 정보</h3>
+          <div class="inner" id="totalInfo">
+            🔵 노드: 0<br />🔗 링크: 0<br />➡️ 화살표: 0<br />📐 폴리곤: 0
+          </div>
+        </div>
+        <div class="group">
+          <h3>📁 프로젝트</h3>
+          <div class="inner">
+            <div id="projName">이름: 새 프로젝트</div>
+            <div id="projAuthor">작성자: 홍길동</div>
+            <div id="projState" style="color: #27ae60">상태: 저장됨</div>
+          </div>
+        </div>
+
+        <div class="group" id="nodeGroup" style="display: none">
+          <h3>🔵 노드 속성</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>ID</label><input id="nodeId" type="text" readonly />
+            </div>
+            <div class="row">
+              <label>Name</label><input id="nodeName" type="text" />
+            </div>
+            <div class="row">
+              <label>X</label><input id="nodeX" type="number" step="1" />
+            </div>
+            <div class="row">
+              <label>Y</label><input id="nodeY" type="number" step="1" />
+            </div>
+            <div class="row">
+              <label>타입</label>
+              <select id="nodeType">
+                <option value="일반">일반</option>
+                <option value="계단">계단</option>
+                <option value="엘리베이터">엘리베이터</option>
+                <option value="에스컬레이터">에스컬레이터</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="group" id="linkGroup" style="display: none">
+          <h3>🔗 링크 속성</h3>
+          <div class="inner stack8">
+            <div class="row">
+              <label>ID</label><input id="linkId" type="text" readonly />
+            </div>
+            <div class="row">
+              <label>From</label
+              ><select id="linkFrom"></select>
+            </div>
+            <div class="row">
+              <label>To</label
+              ><select id="linkTo"></select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 우측 패널: 방위 속성 -->
+        <div id="compassPanel" class="group" style="display: none">
+          <h3>🧭 방위 속성</h3>
+          <div class="inner">
+            <div class="field">
+              <label for="compassFrom">From (첫번째 노드)</label>
+              <select id="compassFrom"></select>
+            </div>
+            <div class="field">
+              <label for="compassTo">To (두번째 노드)</label>
+              <select id="compassTo"></select>
+            </div>
+            <div class="field">
+              <label for="compassAz">Azimuth (0~360°)</label>
+              <input
+                id="compassAz"
+                type="number"
+                min="0"
+                max="360"
+                step="0.1"
+                placeholder="예: 23.5"
+              />
+            </div>
+            <div class="row" style="gap: 8px; margin-top: 8px">
+              <button id="btnCompassApply" class="btn">적용</button>
+              <button id="btnCompassClear" class="btn btn-ghost">해제</button>
+            </div>
+            <div id="compassInfo" class="muted" style="margin-top: 6px"></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>⌨️ 단축키</h3>
+          <div class="inner">
+            <div class="muted">
+              Ctrl+Z 실행 취소 · Ctrl+Y 다시 실행 · Delete 삭제 · Ctrl+휠 줌
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 새 프로젝트 모달 -->
+    <div class="modal-back" id="newModalBack" role="dialog" aria-modal="true">
+      <div class="modal" role="document">
+        <header>
+          <strong>새 프로젝트 설정</strong>
+          <button class="btn" id="closeModal">닫기</button>
+        </header>
+        <div class="body">
+          <div class="group">
+            <h3>기본 설정</h3>
+            <div class="inner stack8">
+              <div class="row">
+                <label>프로젝트 이름</label>
+                <input
+                  id="projectName"
+                  type="text"
+                  placeholder="예: 새 프로젝트"
+                  maxlength="80"
+                />
+              </div>
+              <div class="row">
+                <label>작성자</label>
+                <input
+                  id="projectAuthor"
+                  type="text"
+                  placeholder="예: 홍길동"
+                  maxlength="80"
+                />
+              </div>
+              <div class="row">
+                <label>층 수</label
+                ><input
+                  id="floorCount"
+                  type="number"
+                  min="1"
+                  max="12"
+                  value="4"
+                />
+              </div>
+              <div class="row">
+                <label>시작 층</label
+                ><select id="startFloor"></select>
+              </div>
+              <div class="row">
+                <label>스케일</label
+                ><input id="scale" type="text" value="0.33167" />
+                <span class="muted">m/pixel</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="group">
+            <h3>층별 배경 이미지</h3>
+            <div class="inner" id="floorFiles" class="stack8"></div>
+          </div>
+
+          <div class="row" style="justify-content: flex-end; gap: 8px">
+            <button class="btn" id="btnModalReset">초기화</button>
+            <button class="btn primary" id="btnModalOk">확인</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./js/editor.js" defer></script>
+  </body>
+</html>

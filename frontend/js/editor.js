@@ -1,55 +1,78 @@
-// --------------------------------------------------------------
-// ------------------------- Django Proejct ---------------------
-const API_BASE = "http://127.0.0.1:8000/api";
+import {
+  apiGetProject,
+  apiUpdateProject,
+  apiCreateProject,
+  apiUploadFloorImage,
+  API_BASE,
+  API_ORIGIN,
+} from "./api.js";
+import { qs } from "./common.js";
 
-// 서버에 새 프로젝트 저장 (Instar JSON 그대로)
-async function apiCreateProject(instarJson) {
-  const res = await fetch(`${API_BASE}/projects/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(instarJson),
-  });
-  return res.json(); // { id, ...instarJson }
+// === ID counters ============================================================
+let counters = {
+  node: 1,
+  link: 1,
+  arrow: 1,
+  polygon: 1,
+  rect: 1,
+};
+
+function resetCounters() {
+  counters = { node: 1, link: 1, arrow: 1, polygon: 1, rect: 1 };
 }
 
-async function apiUpdateProject(id, instarJson) {
-  const res = await fetch(`${API_BASE}/projects/${id}/`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(instarJson),
-  });
-  return res.json();
+function nextNodeId() {
+  return `N_${counters.node++}`;
 }
-
-async function apiGetProject(id) {
-  const res = await fetch(`${API_BASE}/projects/${id}/`);
-  return res.json();
+function nextLinkId() {
+  return `lk_${counters.link++}`;
 }
+// 필요하면 화살표/폴리곤/직사각형도 동일 패턴으로 사용
+// function nextArrowId() { return `ar_${counters.arrow++}`; } ...
 
-async function apiListProjects() {
-  const res = await fetch(`${API_BASE}/projects/`);
-  return res.json();
-}
+// 현재 로드된 데이터에서 시퀀스 재설정
+function setCountersFromData(json) {
+  // nodes: { "n_3": {...}, "n_10": {...} } 또는 배열일 수도 있다면 보완
+  const nodeIds = Array.isArray(json?.nodes)
+    ? json.nodes.map((n) => n.id)
+    : Object.keys(json?.nodes || {});
+  const maxNode = nodeIds.reduce((m, id) => {
+    const mtx = /^N_(\d+)$/.exec(id || "");
+    return Math.max(m, mtx ? parseInt(mtx[1], 10) : 0);
+  }, 0);
+  counters.node = (maxNode || 0) + 1;
 
-// 프로젝트 삭제(DELETE /projects/:id)
-async function apiDeleteProject(id) {
-  const res = await fetch(`${API_BASE}/projects/${id}/`, { method: "DELETE" });
-  return res.json();
+  // links: 배열 [{id:"lk_5", a:"n_1", b:"n_2"}, ...] 또는 생성 규칙이 없다면 0으로
+  const linkIds = (json?.links || []).map((l) => l.id);
+  const maxLink = linkIds.reduce((m, id) => {
+    const mtx = /^lk_(\d+)$/.exec(id || "");
+    return Math.max(m, mtx ? parseInt(mtx[1], 10) : 0);
+  }, 0);
+  counters.link = (maxLink || 0) + 1;
+
+  // 필요 시 arrow/polygon/rect도 같은 방식으로
 }
 
 function collectProjectSettingsFromForm() {
   // 실제 폼 id/name은 네 index.html에 맞춰 수정해.
-  const name = document.querySelector('#projName').value?.trim() || '새 프로젝트';
-  const floors = parseInt(document.querySelector('#floorCount').value || '1', 10);
-  const startFloor = parseInt(document.querySelector('#startFloor').value || '1', 10);
-  const scale = parseFloat(document.querySelector('#scale').value || '0') || 0;
+  const name =
+    document.querySelector("#projName").value?.trim() || "새 프로젝트";
+  const floors = parseInt(
+    document.querySelector("#floorCount").value || "1",
+    10
+  );
+  const startFloor = parseInt(
+    document.querySelector("#startFloor").value || "1",
+    10
+  );
+  const scale = parseFloat(document.querySelector("#scale").value || "0") || 0;
 
   // 층별 이미지 초기화 (배경 이미지는 확인 후 업로드 기능 붙일 때 URL 채움)
   const images = Array.from({ length: floors }, () => null);
 
   // 에디터가 기대하는 Instar 포맷의 최소 구조
   return {
-    meta: { projectName: name, projectAuthor: '' },
+    meta: { projectName: name, projectAuthor: "" },
     scale,
     // 네가 이미 쓰는 내부 구조가 있다면 serialize 함수에서 덮어쓴다.
     nodes: {},
@@ -78,12 +101,12 @@ async function onProjectCreateConfirm() {
     hydrateEditorFromInstar(saved); // 이미 있는 함수면 사용, 아니면 작성(아래 참고)
 
     // UI 상태 갱신(프로젝트명/저장됨 배지 등)
-    updateProjectHeader(saved.meta?.projectName || '새 프로젝트', '저장됨');
+    updateProjectHeader(saved.meta?.projectName || "새 프로젝트", "저장됨");
 
-    console.log('프로젝트 생성/저장 완료:', saved);
+    console.log("프로젝트 생성/저장 완료:", saved);
   } catch (err) {
-    console.error('프로젝트 생성 실패:', err);
-    alert('프로젝트 생성에 실패했습니다.');
+    console.error("프로젝트 생성 실패:", err);
+    alert("프로젝트 생성에 실패했습니다.");
   }
 }
 
@@ -99,7 +122,7 @@ const state = {
   floors: 4,
   startFloor: 0,
   scale: 0.33167,
-  images: {}, // { floorIndex: ObjectURL }
+  images: [], // { floorIndex: ObjectURL }
   currentFloor: 0,
   imageLocked: true,
 
@@ -254,7 +277,9 @@ function buildFloorFileRows() {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    input.className = "hidden";
+    input.className = "floor-file hidden";
+    input.dataset.floor = String(i);
+
     sel.onclick = () => {
       input.click();
     };
@@ -306,13 +331,34 @@ function sanitizeName(str) {
 }
 
 function getProjectName() {
-  const v =
-    (window.els?.projName && els.projName.value) ||
-    (window.els?.projectName && els.projectName.value) ||
-    window.state?.projectName ||
-    document.getElementById("projectName")?.value ||
-    "새 프로젝트";
-  return sanitizeName(v);
+  const s = (x) => (typeof x === "string" ? x.trim() : "");
+
+  // 1) 명시 입력 필드들 (프로젝트 설정 모달 input 등)
+  const fromModalInput = s(els.projectName?.value);
+
+  // 2) 에디터 상단이 input인 경우
+  const fromHeaderInput = s(els.projName?.value);
+
+  // 3) 에디터 상단이 라벨(span/div)인 경우 → "이름: " 접두 제거
+  const fromHeaderLabel = s(els.projName?.textContent)
+    ?.replace(/^이름:\s*/, "")
+    .trim();
+
+  // 4) 최근 state (로드/입력 이벤트에서 항상 동기화)
+  const fromState = s(state?.projectName);
+
+  // 5) 기타 예비 (혹시 남아있는 id 기반 input)
+  const fromDom = s(document.getElementById("projectName")?.value);
+
+  const name =
+    fromModalInput ||
+    fromHeaderInput ||
+    fromHeaderLabel ||
+    fromState ||
+    fromDom ||
+    "";
+  const clean = sanitizeName(name);
+  return clean || "새 프로젝트";
 }
 
 els.bgImg.addEventListener("load", () => {
@@ -817,7 +863,7 @@ window.addEventListener("resize", redrawOverlay);
 function applyViewTransform() {
   const { scale, tx, ty } = state.view;
   els.stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-  const z = Math.rount(scale * 100);
+  const z = Math.round(scale * 100);
   document.getElementById("zoomLbl")?.replaceChildren(`🔍 ${z}%`);
 }
 
@@ -914,7 +960,7 @@ function handleLinkPick(nodeId) {
     }
 
     const newLink = {
-      id: `lk_${lk_n}`,
+      id: nextLinkId(),
       floor: state.currentFloor,
       a: pendingLinkFrom,
       b: nodeId,
@@ -996,7 +1042,10 @@ els.modalOk.addEventListener("click", async () => {
 
   try {
     // 1) 폼 값 읽기 + 정리
-    const floors = Math.max(1, Math.min(12, parseInt(els.floorCount.value || "1", 10)));
+    const floors = Math.max(
+      1,
+      Math.min(12, parseInt(els.floorCount.value || "1", 10))
+    );
     const startFloor = parseInt(els.startFloor.value || "1", 10);
     const scale = parseFloat(els.scale.value || "0.33167") || 0.33167;
     const projectName = (els.projectName.value || "새 프로젝트").trim();
@@ -1006,26 +1055,29 @@ els.modalOk.addEventListener("click", async () => {
     const payload = {
       meta: { projectName, projectAuthor },
       scale,
-      nodes: {},                 // 에디터 로직에 맞춰 객체 or 배열 사용
+      nodes: {}, // 에디터 로직에 맞춰 객체 or 배열 사용
       connections: {},
       special_points: {},
-      north_reference: null,     // 북방위 기능 붙이면 {from_node,to_node,azimuth}
+      north_reference: null, // 북방위 기능 붙이면 {from_node,to_node,azimuth}
       images: Array.from({ length: floors }, () => null),
       startFloor,
     };
 
-    // 3) 서버에 생성(POST /api/projects/)
-    const saved = await apiCreateProject(payload); // ← 이미 너가 만든 래퍼
     // saved = { id, ...payload }
+    const saved = await apiCreateProject(payload);
 
     // 4) 전역 상태/UI 반영
-    state.projectId = saved.id;         // ✅ DB id 보관 (이후 PUT에 사용)
+    state.projectId = saved.id; // ✅ DB id 보관 (이후 PUT에 사용)
+    state.projectName = projectName;
+    state.projectAuthor = projectAuthor;
     state.floors = floors;
     state.startFloor = startFloor;
     state.scale = scale;
     state.currentFloor = startFloor;
+    // state.currentFloor = Math.max(0, startFloor - 1);
     state.graph = { nodes: [], links: [] }; // 네 기존 편집 상태 초기화 유지
     state.modified = false;
+    resetCounters();
 
     // 헤더/상태표시
     els.projName.textContent = projectName;
@@ -1033,10 +1085,42 @@ els.modalOk.addEventListener("click", async () => {
     els.projState.textContent = "상태: 저장됨";
     els.projState.style.color = "#27ae60";
 
+    // 서버에 이밎 생성(POST /api/projects/)
+    console.log(state);
+    console.log("이미지 저장");
+    const inputs = document.querySelectorAll(".floor-file");
+    await Promise.all(
+      [...inputs].map((inp) => {
+        const file = inp.files?.[0];
+        if (!file) return Promise.resolve();
+        const floor = Number(inp.dataset.floor) || 0; // ← 0-기반 인덱스
+        // api.js 쪽의 apiUploadFloorImage를 사용 (절대 URL 보장)
+        return apiUploadFloorImage({
+          project: state.projectId,
+          floor,
+          file,
+        }).then((json) => {
+          const url = json.url?.startsWith("http")
+            ? json.url
+            : `${API_ORIGIN}${json.url}`;
+          state.images[floor] = url; // ← 0-기반 배열에 정확히 매핑
+        });
+      })
+    );
+
+    // 3) 업로드한 URL 배열을 DB에 반영 (재오픈 시 그대로 뜨게)
+    try {
+      await apiUpdateProject(state.projectId, { images: state.images });
+    } catch (e) {
+      console.warn("images 업데이트 실패(무시 가능):", e);
+    }
+
     // 5) 에디터 초기화 (네가 쓰는 함수명으로 대체 가능)
-    clearSelection();
-    activateProject(); // 기존 흐름 유지
-    closeModal();
+    populateFloorSelect?.();
+    renderFloor?.();
+    clearSelection?.();
+    activateProject?.();
+    closeModal?.();
 
     console.log("프로젝트 생성/저장 완료:", saved);
   } catch (err) {
@@ -1046,7 +1130,6 @@ els.modalOk.addEventListener("click", async () => {
     els.modalOk.disabled = false;
   }
 });
-
 
 els.floorSelect.addEventListener("change", (e) => {
   state.currentFloor = parseInt(e.target.value, 10);
@@ -1206,7 +1289,7 @@ els.overlay.addEventListener(
     }
 
     const newNode = {
-      id: `N_${nd_n}`,
+      id: nextNodeId(),
       name: "",
       floor: state.currentFloor + 1,
       x,
@@ -1239,61 +1322,6 @@ els.overlay.addEventListener("pointerup", (ev) => {
 
 let lastNodeDownTs = 0;
 let suppressNextClick = false;
-
-els.overlay.addEventListener(
-  "pointerdown",
-  (ev) => {
-    if (state.tool !== "node") return;
-    if (ev.button !== 0) return;
-    if (ev.target !== els.overlay) return;
-
-    const now = performance.now();
-    if (now - lastNodeDownTs < 200) return; // 디바운스
-    lastNodeDownTs = now;
-
-    const { x: px, y: py, rect } = imagePointFromClient(ev);
-    if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
-
-    let x = px,
-      y = py;
-    const { v, h } = state.snap?.cand || {};
-
-    // v/h 둘 다 → 교차점, 하나만 → 그 축으로 스냅
-    if (v && h) {
-      x = v.x;
-      y = h.y;
-    } else if (v) {
-      x = v.x;
-    } else if (h) {
-      y = h.y;
-    }
-
-    // (옵션) Shift 직교 스냅 우선하려면 이 블록을 위로 올려
-    if (state.keys.shift && state.graph.nodes.length) {
-      const last = state.graph.nodes[state.graph.nodes.length - 1];
-      const dx = Math.abs(x - last.x),
-        dy = Math.abs(y - last.y);
-      if (dx >= dy) y = last.y;
-      else x = last.x;
-    }
-
-    const newNode = {
-      id: `n_${Math.random().toString(36).slice(2, 8)}`,
-      name: "",
-      x,
-      y,
-    };
-    state.graph.nodes.push(newNode);
-    selectNode(newNode.id);
-    redrawOverlay();
-
-    // 👉 뒤따르는 click을 한 번 무시
-    suppressNextClick = true;
-    ev.preventDefault();
-    ev.stopPropagation();
-  },
-  { passive: false }
-);
 
 function cancelLongPress() {
   clearTimeout(state.longPress.timer);
@@ -1438,7 +1466,7 @@ function setTool(next) {
   if (state.tool !== "link") {
     pendingLinkFrom = null;
   }
-  
+
   if (next === "compass") {
     els.compassPanel.style.display = "";
     populateCompassNodeSelects();
@@ -1495,7 +1523,6 @@ els.btnCompassClear.addEventListener("click", () => {
   els.projState.textContent = "상태: 수정됨";
   els.projState.style.color = "#e67e22";
 });
-
 
 // ----------------------------------------------------
 // ------------------ save function -------------------
@@ -1715,7 +1742,6 @@ async function openProjectFromDirectory() {
   }/`;
 }
 
-
 function applyFromInstarFormat(json) {
   // scale
   if (typeof json.scale === "number") {
@@ -1773,6 +1799,13 @@ function applyFromInstarFormat(json) {
   // 적용
   state.graph = { nodes, links };
 
+  setCountersFromData({
+    nodes: Array.isArray(nodes)
+      ? nodes
+      : Object.fromEntries(nodes.map((n) => [n.id, n])),
+    links,
+  });
+
   if (json.meta) {
     if (json.meta?.projectName != null)
       state.projectName = json.meta.projectName || "새 프로젝트";
@@ -1784,27 +1817,65 @@ function applyFromInstarFormat(json) {
   if (els.projAuthor)
     els.projAuthor.textContent = "작성자: " + (state.projectAuthor || "-");
 
+  // images 복원: 배열 또는 딕셔너리 모두 지원
+  if (json.images) {
+    let arr;
+    if (Array.isArray(json.images)) {
+      arr = json.images;
+    } else if (typeof json.images === "object") {
+      // { "0": "파일명 또는 URL", "1": ... } -> 인덱스 순서 배열로 변환
+      const maxIdx = Math.max(
+        ...Object.keys(json.images)
+          .map((k) => +k)
+          .filter((n) => !isNaN(n)),
+        -1
+      );
+      arr = Array.from(
+        { length: maxIdx + 1 },
+        (_, i) => json.images[String(i)] ?? null
+      );
+    }
+    if (arr) {
+      // 파일명만 저장된 경우 /media 경로 보정
+      state.images = arr.map((v) => {
+        if (!v) return null;
+        if (/^https?:\/\//.test(v)) return v; // 이미 절대 URL이면 그대로
+        if (v.startsWith("/media/")) return `${API_ORIGIN}${v}`; // /media → 백엔드 ORIGIN 붙임
+        return `${API_ORIGIN}/media/floor_images/${state.projectId}_${state.currentFloor}_${v}`;
+      });
+    }
+  }
+
   clearSelection?.();
   updateLayersPanel?.();
   redrawOverlay?.();
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
+
+  // 층 리스트 갱신 + 현재 층 이미지 표시
+  populateFloorSelect?.();
+  renderFloor?.();
+}
+
+async function uploadFloorImage(projectId, floorIndex, file) {
+  const fd = new FormData();
+  fd.append("project", projectId ?? state.projectId ?? "default");
+  fd.append("floor", floorIndex);
+  fd.append("file", file);
+  const res = await fetch(`${API_BASE}/upload_floor_image/`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) throw new Error("upload failed");
+  const json = await res.json(); // { ok:true, url:"http://127.0.0.1:8000/media/..." or "/media/..." }
+  const url = json.url?.startsWith("http")
+    ? json.url
+    : `${API_ORIGIN}${json.url}`;
+  return { ok: json.ok, url };
 }
 
 // connect function and save button
 // 저장(DB)
-function buildImagesFieldForDB() {
-  // 파일 자체는 아직 서버에 업로드하지 않으므로,
-  // 사용자가 고른 파일 "이름"만 임시로 저장 (없으면 null)
-  const out = {};
-  for (let i = 0; i < (state.floors || 0); i++) {
-    const pill = document.getElementById("fileName_" + i);
-    const label = (pill?.textContent || "").trim();
-    out[i] = label && label !== "이미지 없음" ? label : null;
-  }
-  return out;
-}
-
 els.btnSave.addEventListener("click", async () => {
   try {
     if (!state.projectId) {
@@ -1820,15 +1891,12 @@ els.btnSave.addEventListener("click", async () => {
       projectName: getProjectName(),
       projectAuthor:
         (els.projAuthor?.textContent || "").replace(/^작성자:\s*/, "") ||
-        (els.projectAuthor?.value || "") ||
+        els.projectAuthor?.value ||
+        "" ||
         "",
     };
     data.scale = Number(state.scale) || Number(els.scale?.value) || 0;
     data.startFloor = state.startFloor ?? 1;
-
-    // ⚠️ 이미지: 아직 서버 업로드 API가 없으니, DB에는 파일명(라벨)만 임시 저장
-    // (ObjectURL은 재실행 시 무효이므로 저장 X)
-    data.images = buildImagesFieldForDB();
 
     const saved = await apiUpdateProject(state.projectId, data);
 
@@ -1843,7 +1911,6 @@ els.btnSave.addEventListener("click", async () => {
     alert("DB 저장에 실패했습니다. 콘솔을 확인해 주세요.");
   }
 });
-
 
 // 내보내기
 els.btnExport.addEventListener("click", async () => {
@@ -1895,5 +1962,28 @@ els.btnOpen.addEventListener("click", async () => {
     els.status.textContent = "열기 실패";
   }
 });
+
+(async function bootstrap() {
+  const u = new URL(location.href);
+  const pid = u.searchParams.get("project");
+  if (pid) {
+    const data = await apiGetProject(pid);
+    state.projectId = data.id;
+    applyFromInstarFormat(data); // 복원 함수
+
+    // 헤더 상태 갱신
+    if (els.projName)
+      els.projName.textContent =
+        "이름: " + (data?.meta?.projectName || "새 프로젝트");
+    if (els.projState) {
+      els.projState.textContent = "상태: 저장됨";
+      els.projState.style.color = "#27ae60";
+    }
+    activateProject();
+  } else {
+    // 새 프로젝트 플로우: 모달만 열고, 모달 "확인"에서 apiCreateProject 1회 실행
+    openModal();
+  }
+})();
 
 setTool("select");

@@ -77,8 +77,6 @@ STATIC_URL = '/static/'
 # CORS (개발용 전체 허용)
 CORS_ALLOW_ALL_ORIGINS = True
 
-# 미디어 (A안에선 사용 안 함)
+# 미디어
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-
-
