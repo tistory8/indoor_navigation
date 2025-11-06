@@ -53,63 +53,6 @@ function setCountersFromData(json) {
   // 필요 시 arrow/polygon/rect도 같은 방식으로
 }
 
-function collectProjectSettingsFromForm() {
-  // 실제 폼 id/name은 네 index.html에 맞춰 수정해.
-  const name =
-    document.querySelector("#projName").value?.trim() || "새 프로젝트";
-  const floors = parseInt(
-    document.querySelector("#floorCount").value || "1",
-    10
-  );
-  const startFloor = parseInt(
-    document.querySelector("#startFloor").value || "1",
-    10
-  );
-  const scale = parseFloat(document.querySelector("#scale").value || "0") || 0;
-
-  // 층별 이미지 초기화 (배경 이미지는 확인 후 업로드 기능 붙일 때 URL 채움)
-  const images = Array.from({ length: floors }, () => null);
-
-  // 에디터가 기대하는 Instar 포맷의 최소 구조
-  return {
-    meta: { projectName: name, projectAuthor: "" },
-    scale,
-    // 네가 이미 쓰는 내부 구조가 있다면 serialize 함수에서 덮어쓴다.
-    nodes: {},
-    connections: {},
-    special_points: {},
-    north_reference: null, // {from_node, to_node, azimuth} 붙일 예정이면 남겨둠
-    images,
-    // 선택: 초기 값들 (시작층 등)도 meta 아래에 보관해도 무방
-    startFloor,
-  };
-}
-
-// 확인 버튼 핸들러
-async function onProjectCreateConfirm() {
-  try {
-    const payload = collectProjectSettingsFromForm();
-
-    // ✅ 새 프로젝트를 DB에 즉시 저장
-    const saved = await apiCreateProject(payload);
-
-    // 발급된 id 보관
-    state.projectId = saved.id;
-    state.modified = false;
-
-    // 에디터 화면을 초기화/세팅
-    hydrateEditorFromInstar(saved); // 이미 있는 함수면 사용, 아니면 작성(아래 참고)
-
-    // UI 상태 갱신(프로젝트명/저장됨 배지 등)
-    updateProjectHeader(saved.meta?.projectName || "새 프로젝트", "저장됨");
-
-    console.log("프로젝트 생성/저장 완료:", saved);
-  } catch (err) {
-    console.error("프로젝트 생성 실패:", err);
-    alert("프로젝트 생성에 실패했습니다.");
-  }
-}
-
 // --------------------------------------
 // ------------ App State ---------------
 const state = {
@@ -330,6 +273,10 @@ function renderFloor() {
 function currentFloor() {
   // (레거시 호환) state.currentfloor 사용 중이면 그 값을 우선
   return Number(state.currentFloor ?? state.currentfloor ?? 0);
+}
+function getNodeById(id) {
+  const sid = String(id);
+  return (state.graph?.nodes || []).find(n => String(n.id) === sid) || null;
 }
 function nodesOnFloor(f) {
   return (state.graph.nodes || []).filter((n) => (n.floor ?? 0) === f);
@@ -762,24 +709,10 @@ function imagePointFromClient(ev) {
     rect: { left: 0, top: 0, width: natW, height: natH },
   };
 }
-
-function snapToAxisOfExisting(px, py, tol = 8) {
-  let outX = px,
-    outY = py,
-    best = Infinity;
-  for (const n of state.graph.nodes) {
-    const dx = Math.abs(px - n.x);
-    const dy = Math.abs(py - n.y);
-    if (dx <= tol && dx < best) {
-      outX = n.x;
-      best = dx;
-    }
-    if (dy <= tol && dy < best) {
-      outY = n.y;
-      best = dy;
-    }
-  }
-  return { x: outX, y: outY };
+function getNodeLabelById(id) {
+  const n = state.graph.nodes.find((nn) => nn.id === id);
+  const name = (n?.name || "").trim();
+  return name ? name : id;
 }
 
 function redrawOverlay() {
@@ -987,7 +920,12 @@ function updateLayersPanel() {
   // 리스트 컨테이너
   const box = els.layersList || document.getElementById("layersList");
   if (!box) return;
-  box.innerHTML = ""; // ★ 반드시 비우고 시작(다른 층 잔상 제거)
+  box.innerHTML = "";
+
+  function activateItem(li) {
+    box.querySelectorAll(".layer-item.active").forEach(el => el.classList.remove("active"));
+    li.classList.add("active");
+  }
 
   // 1) 노드 (현재 층 전용)
   for (const n of nodesF) {
@@ -1003,6 +941,15 @@ function updateLayersPanel() {
       <span class="dot"></span>
       <span class="label">🔵 ${nodeLabel(n)}</span>
     `;
+
+    // ✅ 클릭하면 기존 selectNode 호출 → 오른쪽 속성 패널 갱신
+    li.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof setTool === "function" && state.tool !== "select") setTool("select");
+      if (typeof selectNode === "function") selectNode(n.id);
+      activateItem(li);
+    });
 
     // 오른쪽 좌표
     const right = document.createElement("div");
@@ -1028,14 +975,29 @@ function updateLayersPanel() {
       <span class="label">🔗 ${linkLabel(l)}</span>
     `;
 
+    // ✅ 클릭하면 기존 selectLink 호출 → 속성 패널 갱신
+    li.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof setTool === "function" && state.tool !== "select") setTool("select");
+      if (typeof selectLink === "function") selectLink(l.id);
+      activateItem(li);
+    });
+
     const right = document.createElement("div");
     right.className = "layer-right mono small";
-    right.textContent = linkEndpointsLabel(l, nodesF); // 같은 층 노드 기준으로 표시
+    right.textContent = linkEndpointsLabel(l, nodesF);
 
     li.appendChild(left);
     li.appendChild(right);
     box.appendChild(li);
   }
+
+  if (state.selection) {
+    const q = `.layer-item[data-type="${state.selection.type}"][data-id="${CSS.escape(String(state.selection.id))}"]`;
+    const cur = box.querySelector(q);
+    if (cur) cur.classList.add("active");
+  }  
 }
 
 
@@ -1105,42 +1067,88 @@ function handleLinkPick(nodeId) {
   }
 }
 
+function fillNodeSelect(selectEl, floor, selectedId) {
+  if (!selectEl) return;
+  const list = nodesOnFloor(floor);
+  const sel = String(selectedId ?? "");
+  selectEl.innerHTML = "";
+  for (const n of list) {
+    const opt = document.createElement("option");
+    opt.value = String(n.id);           // 항상 문자열
+    opt.textContent = nodeLabel(n);     // 이름 없으면 N_{nseq}
+    if (String(n.id) === sel) opt.selected = true;
+    selectEl.appendChild(opt);
+  }
+}
+
 function selectNode(id) {
-  state.selection = { type: "node", id };
-  const n = state.graph.nodes.find((x) => x.id === id);
-  els.selLbl.textContent = `👆 선택: 노드 ${n?.name ? n.name : n.id}`;
+  const n = getNodeById(id);
+  
+  if (currentFloor() !== Number(n.floor ?? 0)) {
+    setFloor(Number(n.floor ?? 0));
+  }
+  state.selection = { type: "node", id: n.id };
+
+  els.selLbl.textContent = `👆 선택: 노드 ${n.nseq}`;
   els.nodeGroup.style.display = "block";
   els.linkGroup.style.display = "none";
-  els.nodeId.value = n.id;
+  els.nodeId.value = `N_${n.nseq}`;
   els.nodeName.value = n.name || "";
   els.nodeX.value = Math.round(n.x);
   els.nodeY.value = Math.round(n.y);
   els.nodeType.value = n.type || "일반";
   redrawOverlay();
+  if (typeof updateLayersPanel === "function") updateLayersPanel();
 }
 
 function selectLink(id) {
+  const l = (state.graph?.links || []).find(x => String(x.id) === String(id));
+  console.log(l);
+  
   state.selection = { type: "link", id };
-  const l = state.graph.links.find((x) => x.id === id);
-  els.selLbl.textContent = `👆 선택: 링크 ${l?.id}`;
+
+  els.selLbl.textContent = `👆 선택: 링크 lk_${l?.lseq}`;
   els.nodeGroup.style.display = "none";
   els.linkGroup.style.display = "block";
-  els.linkId.value = l.id;
-  // 노드 목록 드롭다운 채우기
-  const opts = state.graph.nodes
-    .map(
-      (n) =>
-        `<option value="${n.id}">${
-          n.name ? n.name + " (" + n.id + ")" : n.id
-        }</option>`
-    )
-    .join("");
-  els.linkFrom.innerHTML = opts;
-  els.linkTo.innerHTML = opts;
-  els.linkFrom.value = l.a;
-  els.linkTo.value = l.b;
+  els.linkId.value = `lk_${l.lseq}`;
+
+  const floor = Number(l.floor ?? curFloor());
+
+  // 드롭다운: 반드시 링크의 층 노드만
+  fillNodeSelect(els.linkFrom, floor, l.a);
+  fillNodeSelect(els.linkTo,   floor, l.b);  
+
+  els.linkFrom.onchange = () => {
+    const newId = els.linkFrom.value;
+    const node = getNodeById(newId);
+    if (!node) return;
+    if (Number(node.floor ?? floor) !== floor) {
+      alert("현재 층에 없는 노드는 선택할 수 없습니다.");
+      fillNodeSelect(els.linkFrom, floor, l.a); // 되돌리기
+      return;
+    }
+    l.a = String(node.id);
+    redrawOverlay();
+    if (typeof updateLayersPanel === "function") updateLayersPanel();
+  };
+  els.linkTo.onchange = () => {
+    const newId = els.linkTo.value;
+    const node = getNodeById(newId);
+    if (!node) return;
+    if (Number(node.floor ?? floor) !== floor) {
+      alert("현재 층에 없는 노드는 선택할 수 없습니다.");
+      fillNodeSelect(els.linkTo, floor, l.b); // 되돌리기
+      return;
+    }
+    l.b = String(node.id);
+    redrawOverlay();
+    if (typeof updateLayersPanel === "function") updateLayersPanel();
+  };
+
   redrawOverlay();
+  if (typeof updateLayersPanel === "function") updateLayersPanel();
 }
+
 function clearSelection() {
   state.selection = { type: null, id: null };
   els.selLbl.textContent = "👆 선택: 없음";
