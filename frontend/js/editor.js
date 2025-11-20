@@ -69,7 +69,7 @@ const state = {
   currentFloor: 0,
   imageLocked: true,
 
-  graph: { nodes: [], links: [] },
+  graph: { nodes: [], links: [], polygons: [] },
   view: { scale: 1, tx: 0, ty: 0 },
   tool: "select",
   selection: { type: null, id: null },
@@ -85,6 +85,7 @@ const state = {
   seq: {
     node: {}, // floor(int) -> max nseq
     link: {}, // floor(int) -> max lseq
+    polygon: {},
   },
 };
 state.mouse = { x: 0, y: 0 };
@@ -155,6 +156,33 @@ const els = {
   linkId: document.getElementById("linkId"),
   linkFrom: document.getElementById("linkFrom"),
   linkTo: document.getElementById("linkTo"),
+
+  // polygon props
+  polyGroup: document.getElementById("polyGroup"),
+  polyId: document.getElementById("polyId"),
+  polyName: document.getElementById("polyName"),
+  polyPts: [
+    {
+      x: document.getElementById("polyP1X"),
+      y: document.getElementById("polyP1Y"),
+      node: document.getElementById("polyP1Node"),
+    },
+    {
+      x: document.getElementById("polyP2X"),
+      y: document.getElementById("polyP2Y"),
+      node: document.getElementById("polyP2Node"),
+    },
+    {
+      x: document.getElementById("polyP3X"),
+      y: document.getElementById("polyP3Y"),
+      node: document.getElementById("polyP3Node"),
+    },
+    {
+      x: document.getElementById("polyP4X"),
+      y: document.getElementById("polyP4Y"),
+      node: document.getElementById("polyP4Node"),
+    },
+  ],
 
   // compass props
   compassPanel: document.getElementById("compassPanel"),
@@ -267,8 +295,8 @@ function renderFloor() {
     els.bgImg.style.display = "none";
     els.bgName.textContent = "이미지 없음";
   }
-  els.selLbl.textContent = els.floorLbl.textContent =
-    "🏢 층: " + (state.currentFloor + 1);
+  els.floorLbl.textContent = "🏢 층: " + (state.currentFloor + 1);
+  els.selLbl.textContent = " ";
 }
 function currentFloor() {
   // (레거시 호환) state.currentfloor 사용 중이면 그 값을 우선
@@ -276,13 +304,18 @@ function currentFloor() {
 }
 function getNodeById(id) {
   const sid = String(id);
-  return (state.graph?.nodes || []).find(n => String(n.id) === sid) || null;
+  return (state.graph?.nodes || []).find((n) => String(n.id) === sid) || null;
 }
 function nodesOnFloor(f) {
   return (state.graph.nodes || []).filter((n) => (n.floor ?? 0) === f);
 }
 function linksOnFloor(f) {
   return (state.graph.links || []).filter((l) => (l.floor ?? 0) === f);
+}
+function polysOnFloor(f) {
+  return (state.graph.polygons || []).filter(
+    (p) => Number(p.floor ?? 0) === Number(f)
+  );
 }
 
 function nextNodeSeq(floor) {
@@ -297,6 +330,10 @@ function nextLinkSeq(floor) {
   const m = state.seq.link;
   m[f] = (m[f] || 0) + 1;
   return m[f];
+}
+function nextPolySeq(floor) {
+  state.seq.polygon[floor] = (state.seq.polygon[floor] ?? 0) + 1;
+  return state.seq.polygon[floor];
 }
 
 // 사용자 입력 name이 있으면 그걸, 없으면 층별 번호 nseq, 그래도 없으면 id
@@ -314,18 +351,74 @@ function linkLabel(l) {
 }
 function linkEndpointsLabel(l, nodes) {
   // 같은 층의 노드 배열에서 id로 찾기
-  const a = nodes.find(nn => String(nn.id) === String(l.a));
-  const b = nodes.find(nn => String(nn.id) === String(l.b));
+  const a = nodes.find((nn) => String(nn.id) === String(l.a));
+  const b = nodes.find((nn) => String(nn.id) === String(l.b));
   if (!a || !b) return ""; // 가드
   return `${nodeLabel(a)} → ${nodeLabel(b)}`;
+}
+
+function findNearestNodeForPoint(floor, pt, maxDist = 20) {
+  const nodesF = nodesOnFloor(floor);
+  let best = null;
+  let bestD2 = Infinity;
+
+  for (const n of nodesF) {
+    const dx = n.x - pt.x;
+    const dy = n.y - pt.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = n;
+    }
+  }
+
+  if (!best) return null;
+  if (Math.sqrt(bestD2) > maxDist) return null; // 너무 멀면 매칭 안 함
+
+  return best;
+}
+
+function refreshPolygonPanel(p) {
+  if (!els.polyGroup) return;
+  if (!p) {
+    els.polyGroup.style.display = "none";
+    return;
+  }
+  els.polyGroup.style.display = "";
+
+  els.polyId.value = p.id || "";
+  els.polyName.value = p.name || "";
+
+  const floor = Number(p.floor ?? currentFloor());
+  const nodes = p.nodes || [];
+
+  for (let i = 0; i < els.polyPts.length; i++) {
+    const ui = els.polyPts[i];
+    const nid = nodes[i];
+    const n = nid ? getNodeById(nid) : null;
+
+    if (!ui) continue;
+
+    if (!n) {
+      ui.x.value = "";
+      ui.y.value = "";
+      ui.node.textContent = "";
+      continue;
+    }
+
+    ui.x.value = Math.round(n.x);
+    ui.y.value = Math.round(n.y);
+    ui.node.textContent = nodeLabel(n);
+  }
 }
 
 function rebuildSeqFromData() {
   // 데이터에 이미 nseq/lseq가 있으면 그 최대값으로 복구,
   // 없으면 생성 순서대로 부여
-  state.seq = state.seq || { node: {}, link: {} };
+  state.seq = state.seq || { node: {}, link: {}, polygon: {} };
   state.seq.node = {};
   state.seq.link = {};
+  state.seq.polygon = {};
 
   // --- 노드 ---
   // floor별로 그룹핑하고, 각 floor에서 n.nseq 최대값 계산
@@ -370,6 +463,27 @@ function rebuildSeqFromData() {
       }
     }
     state.seq.link[f] = maxSeq;
+  }
+
+  // --- 폴리곤 ---
+  const groupedPolys = new Map();
+  for (const p of state.graph.polygons || []) {
+    const f = Number(p.floor ?? 0);
+    if (!groupedPolys.has(f)) groupedPolys.set(f, []);
+    groupedPolys.get(f).push(p);
+  }
+  for (const [f, arr] of groupedPolys) {
+    let maxSeq = 0;
+    for (const p of arr) {
+      if (Number.isInteger(p.pseq) && p.pseq > maxSeq) maxSeq = p.pseq;
+    }
+    for (const p of arr) {
+      if (!Number.isInteger(p.pseq) || p.pseq <= 0) {
+        maxSeq += 1;
+        p.pseq = maxSeq;
+      }
+    }
+    state.seq.polygon[f] = maxSeq;
   }
 }
 
@@ -445,28 +559,49 @@ function activateProject() {
 
 function populateCompassNodeSelects() {
   const make = (sel) => {
+    if (!sel) return;
     sel.innerHTML = "";
-    // 전체 노드 중 현재 층 것만 쓰고 싶으면 visibleNodes() 사용
-    for (const n of state.graph.nodes) {
+
+    for (const n of state.graph.nodes || []) {
       const opt = document.createElement("option");
-      opt.value = n.id;
-      opt.textContent = n.name && n.name.trim() ? `${n.name} (${n.id})` : n.id;
+      opt.value = n.id; // ✅ 내부 id 사용
+
+      const labelSeq = n.nseq != null ? `N_${n.nseq}` : n.id;
+      opt.textContent =
+        n.name && n.name.trim() ? `${n.name} (${labelSeq})` : labelSeq;
+
       sel.appendChild(opt);
     }
   };
+
   make(els.compassFrom);
   make(els.compassTo);
 
   // 기존 northRef가 있으면 기본 선택
-  if (state.northRef.from_node)
+  if (state.northRef?.from_node && els.compassFrom) {
     els.compassFrom.value = state.northRef.from_node;
-  if (state.northRef.to_node) els.compassTo.value = state.northRef.to_node;
-  if (typeof state.northRef.azimuth === "number")
+  }
+  if (state.northRef?.to_node && els.compassTo) {
+    els.compassTo.value = state.northRef.to_node;
+  }
+  if (els.compassAz && typeof state.northRef?.azimuth === "number") {
     els.compassAz.value = state.northRef.azimuth;
-  els.compassInfo.textContent =
-    state.northRef.from_node && state.northRef.to_node
-      ? `현재: ${state.northRef.from_node} → ${state.northRef.to_node}, ${state.northRef.azimuth}°`
-      : "미설정";
+  }
+
+  if (els.compassInfo) {
+    const nf = state.northRef;
+    if (nf?.from_node && nf?.to_node) {
+      const fromN = getNodeById(nf.from_node);
+      const toN = getNodeById(nf.to_node);
+      const fromLabel = fromN ? nodeLabel(fromN) : nf.from_node;
+      const toLabel = toN ? nodeLabel(toN) : nf.to_node;
+      els.compassInfo.textContent = `현재: ${fromLabel} → ${toLabel}, ${
+        nf.azimuth ?? 0
+      }°`;
+    } else {
+      els.compassInfo.textContent = "미설정";
+    }
+  }
 }
 
 // ------------------------------------------------------------
@@ -491,8 +626,11 @@ function collectSnapAnchors() {
     a.push({ x: r.x, y: r.y + r.h });
     a.push({ x: r.x + r.w, y: r.y + r.h });
   }
-  for (const p of state.graph.polys || []) {
-    for (const [x, y] of p.points) a.push({ x, y });
+  for (const p of state.graph.polygons || []) {
+    for (const nid of p.nodes || []) {
+      const n = getNodeById(nid);
+      if (n) a.push({ x: n.x, y: n.y });
+    }
   }
   return a;
 }
@@ -590,6 +728,13 @@ window.addEventListener(
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
     e.preventDefault();
+  }
+  if (state.tool !== "polygon") return;
+  if (e.key === "Enter" && state.polygonDraft) {
+    finalizePolygon();
+  } else if (e.key === "Escape" && state.polygonDraft) {
+    state.polygonDraft = null;
+    redrawOverlay();
   }
 });
 // 휠로 확대/축소 (Ctrl 불필요) – 마우스 기준 줌
@@ -729,10 +874,99 @@ function redrawOverlay() {
 
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  // links
-  const currentFloorLinks = state.graph.links.filter(
-    (lk) => (lk.floor ?? 0) === state.currentFloor
+  const floor = currentFloor();
+
+  // polygon
+  const currentFloorPolygons = (state.graph.polygons || []).filter(
+    (p) => Number(p.floor ?? 0) === Number(state.currentFloor)
   );
+
+  for (const p of currentFloorPolygons) {
+    if (Number(p.floor ?? 0) !== floor) continue;
+
+    // 1) 이 폴리곤이 참조하는 노드들 가져오기
+    const nodesForPoly = (p.nodes || [])
+      .map((nid) => getNodeById(nid))
+      .filter(Boolean); // null 제거
+
+    if (nodesForPoly.length < 3) continue;
+
+    // 2) SVG points 속성
+    const pointsAttr = nodesForPoly.map((pt) => `${pt.x},${pt.y}`).join(" ");
+
+    // 채움
+    const poly = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "polygon"
+    );
+    poly.setAttribute("points", pointsAttr);
+    poly.setAttribute("class", "poly-fill");
+    svg.appendChild(poly);
+
+    // 히트영역(선택용)
+    const h = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    h.setAttribute("points", pointsAttr);
+    h.setAttribute("class", "hit poly-hit");
+    h.dataset.id = p.id;
+    h.addEventListener("click", () => selectPolygon(p.id));
+    svg.appendChild(h);
+
+    // 3) 라벨 위치(노드 중심 기준)
+    const cx =
+      nodesForPoly.reduce((sum, n) => sum + n.x, 0) / nodesForPoly.length;
+    const cy =
+      nodesForPoly.reduce((sum, n) => sum + n.y, 0) / nodesForPoly.length;
+
+    const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    lbl.setAttribute("x", cx);
+    lbl.setAttribute("y", cy);
+    lbl.setAttribute("class", "label");
+    lbl.textContent = p.name || `PG_${p.pseq}`;
+    svg.appendChild(lbl);
+  }
+
+  // 드래프트
+  if (state.tool === "polygon" && state.polygonDraft) {
+    const floor = Number(state.polygonDraft.floor ?? currentFloor());
+
+    // 1) 선택된 노드들의 좌표
+    const fixedPts = (state.polygonDraft.nodes || [])
+      .map((nid) => getNodeById(nid))
+      .filter((n) => n && Number(n.floor ?? 0) === floor)
+      .map((n) => ({ x: n.x, y: n.y }));
+
+    // 2) 마우스 위치를 마지막 점으로 붙여서 미리보기
+    const pts = [...fixedPts];
+    if (state.mouse) {
+      pts.push({ x: state.mouse.x, y: state.mouse.y });
+    }
+
+    if (pts.length >= 2) {
+      const path = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "polyline"
+      );
+      path.setAttribute("points", pts.map((pt) => `${pt.x},${pt.y}`).join(" "));
+      path.setAttribute("class", "poly-preview");
+      svg.appendChild(path);
+
+      // 점 핸들 (실제 노드 위치만)
+      for (const pt of fixedPts) {
+        const c = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "circle"
+        );
+        c.setAttribute("cx", pt.x);
+        c.setAttribute("cy", pt.y);
+        c.setAttribute("r", 3);
+        c.setAttribute("class", "poly-vertex");
+        svg.appendChild(c);
+      }
+    }
+  }
+
+  // links
+  const currentFloorLinks = linksOnFloor(floor);
   for (const lk of currentFloorLinks) {
     const a = state.graph.nodes.find((n) => n.id === lk.a);
     const b = state.graph.nodes.find((n) => n.id === lk.b);
@@ -754,8 +988,8 @@ function redrawOverlay() {
       "pointerdown",
       (e) => {
         if (state.tool !== "select") return;
-        e.stopPropagation();
         e.preventDefault();
+        e.stopPropagation();
         selectLink(lk.id);
       },
       { passive: false }
@@ -779,20 +1013,44 @@ function redrawOverlay() {
   }
 
   // nodes
-  const currentFloorNodes = state.graph.nodes.filter(
-    (n) => (n.floor ?? 0) === state.currentFloor
-  );
+  const currentFloorNodes = nodesOnFloor(floor);
   for (const n of currentFloorNodes) {
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("cx", n.x);
     c.setAttribute("cy", n.y);
     c.setAttribute("r", 5);
+    const isSelectedNode =
+      state.selection?.type === "node" && state.selection.id === n.id;
+
+    const isLinkPending = state.tool === "link" && pendingLinkFrom === n.id;
+
+    // 폴리곤 도구에서 이미 정점으로 찍힌 노드인지
+    const isPolyVertex =
+      state.tool === "polygon" &&
+      state.polygonDraft &&
+      Array.isArray(state.polygonDraft.nodes) &&
+      state.polygonDraft.nodes.includes(n.id);
+
+    // 나침반 도구에서 선택한 A/B 노드인지 (있다면)
+    const isCompassPicked =
+      state.tool === "compass" &&
+      state.compass &&
+      (state.compass.tempA === n.id || state.compass.tempB === n.id);
+
+    // ---------- 클래스 적용 ----------
     c.classList.add("node-dot");
-    if (state.selection.type === "node" && state.selection.id === n.id) {
+
+    // (1) 일반 선택 노드: 기존 빨간 테두리
+    if (isSelectedNode) {
       c.classList.add("selected");
     }
+    // (2) 폴리곤 정점으로 포함된 노드: 파란 점 + 빨간 외곽선 느낌
+    else if (isPolyVertex) {
+      c.classList.add("poly-vertex-active"); // ← css 에서 stroke 빨간색
+    }
 
-    if (state.tool === "link" && pendingLinkFrom === n.id) {
+    // (3) 링크 from / 나침반 선택 노드는 보조 하이라이트
+    if (isLinkPending || isCompassPicked) {
       c.classList.add("selected-node");
     }
 
@@ -804,13 +1062,24 @@ function redrawOverlay() {
       } else if (state.tool === "link") {
         e.stopPropagation();
         handleLinkPick(n.id);
+      } else if (state.tool === "polygon") {
+        e.stopPropagation();
+        addVertexToPolygonDraft(n.id);
       } else if (state.tool === "compass") {
         e.stopPropagation();
+
+        if (!state.compass) state.compass = { tempA: null, tempB: null };
 
         // first selection
         if (!state.compass.tempA) {
           state.compass.tempA = n.id;
-          els.status.textContent = `나침반: 첫 노드 선택 → ${n.name || n.id}`;
+
+          if (els.compassFrom) els.compassFrom.value = n.id; // ★ 패널 From 반영
+          if (els.compassTo && !els.compassTo.value) els.compassTo.value = ""; // 두 번째는 비워두기
+
+          if (els.status)
+            els.status.textContent = `나침반: 첫 노드 선택 → ${n.name || n.id}`;
+
           redrawOverlay?.();
           return;
         }
@@ -818,18 +1087,43 @@ function redrawOverlay() {
         // second selection
         if (!state.compass.tempB && n.id !== state.compass.tempA) {
           state.compass.tempB = n.id;
+
+          if (els.compassTo) els.compassTo.value = n.id; // ★ 패널 To 반영
+
           const A = state.graph.nodes.find((x) => x.id === state.compass.tempA);
           const B = state.graph.nodes.find((x) => x.id === state.compass.tempB);
+
           if (A && B) {
-            const az = 0;
-            state.northRef = { from_node: A.id, to_node: B.id, azimuth: az };
-            els.status.textContent = `나침반 저장: ${A.name || A.id} → ${
-              B.name || B.id
-            } (azimuth ${az}°)`;
-            els.projState.textContent = "상태: 수정됨";
-            els.projState.style.color = "#e67e22";
+            // 나중에 진짜 각도 계산 넣고 싶으면 여기서 계산
+            let az = 0;
+
+            // 패널 Azimuth 값 없으면 기본 0으로 세팅
+            if (els.compassAz && !els.compassAz.value) {
+              els.compassAz.value = String(az);
+            } else if (els.compassAz) {
+              const parsed = parseFloat(els.compassAz.value);
+              if (!Number.isNaN(parsed)) az = parsed;
+            }
+
+            state.northRef = {
+              from_node: A.id,
+              to_node: B.id,
+              azimuth: +az.toFixed(1),
+            };
+
+            if (els.compassInfo) {
+              const fromLabel = nodeLabel ? nodeLabel(A) : A.id;
+              const toLabel = nodeLabel ? nodeLabel(B) : B.id;
+              els.compassInfo.textContent = `설정됨: ${fromLabel} → ${toLabel}, ${state.northRef.azimuth}°`;
+            }
+
+            if (els.projState) {
+              els.projState.textContent = "상태: 수정됨";
+              els.projState.style.color = "#e67e22";
+            }
           }
-          // 한 번 설정 후, 다음 측정 대비 초기화(원하면 유지해도 됨)
+
+          // 다음 측정을 위해 초기화
           state.compass.tempA = null;
           state.compass.tempB = null;
           redrawOverlay?.();
@@ -852,6 +1146,7 @@ function redrawOverlay() {
     svg.appendChild(c);
   }
 
+  // link
   if (state.tool === "link" && pendingLinkFrom) {
     const startNode = state.graph.nodes.find((n) => n.id === pendingLinkFrom);
     if (startNode) {
@@ -887,8 +1182,8 @@ function redrawOverlay() {
   drawSnapGuides(els.overlay);
 
   // 통계 갱신
-  els.layerInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}`;
-  els.totalInfo.innerHTML = els.layerInfo.innerHTML;
+  els.layerInfo.innerHTML = `🔵 노드: ${currentFloorNodes.length}<br/>🔗 링크: ${currentFloorLinks.length}<br/>⬛ 폴리곤: ${currentFloorPolygons.length}`;
+  els.totalInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}<br/>⬛ 폴리곤: ${state.graph.polygons.length}`;
 
   updateLayersPanel();
 }
@@ -907,15 +1202,26 @@ function updateLayersPanel() {
 
   const allNodes = state.graph?.nodes || [];
   const allLinks = state.graph?.links || [];
+  const allPolys = state.graph?.polygons || [];
 
   const nodesF = nodesOnFloor(f);
   const linksF = linksOnFloor(f);
+  const polysF = polysOnFloor
+    ? polysOnFloor(f)
+    : (state.graph?.polygons || []).filter(
+        (p) => Number(p.floor ?? 0) === Number(f)
+      );
 
   // 우측 상단 카운트들 (현재 층 / 전체)
-  if (els.infoCurrentNodes) els.infoCurrentNodes.textContent = String(nodesF.length);
-  if (els.infoCurrentLinks) els.infoCurrentLinks.textContent = String(linksF.length);
-  if (els.infoAllNodes)     els.infoAllNodes.textContent     = String(allNodes.length);
-  if (els.infoAllLinks)     els.infoAllLinks.textContent     = String(allLinks.length);
+  if (els.infoCurrentNodes)
+    els.infoCurrentNodes.textContent = String(nodesF.length);
+  if (els.infoCurrentLinks)
+    els.infoCurrentLinks.textContent = String(linksF.length);
+  if (els.infoAllNodes) els.infoAllNodes.textContent = String(allNodes.length);
+  if (els.infoAllLinks) els.infoAllLinks.textContent = String(allLinks.length);
+  if (els.infoCurrentPolys)
+    els.infoCurrentPolys.textContent = String(polysF.length);
+  if (els.infoAllPolys) els.infoAllPolys.textContent = String(allPolys.length);
 
   // 리스트 컨테이너
   const box = els.layersList || document.getElementById("layersList");
@@ -923,7 +1229,9 @@ function updateLayersPanel() {
   box.innerHTML = "";
 
   function activateItem(li) {
-    box.querySelectorAll(".layer-item.active").forEach(el => el.classList.remove("active"));
+    box
+      .querySelectorAll(".layer-item.active")
+      .forEach((el) => el.classList.remove("active"));
     li.classList.add("active");
   }
 
@@ -946,7 +1254,8 @@ function updateLayersPanel() {
     li.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (typeof setTool === "function" && state.tool !== "select") setTool("select");
+      if (typeof setTool === "function" && state.tool !== "select")
+        setTool("select");
       if (typeof selectNode === "function") selectNode(n.id);
       activateItem(li);
     });
@@ -979,7 +1288,8 @@ function updateLayersPanel() {
     li.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (typeof setTool === "function" && state.tool !== "select") setTool("select");
+      if (typeof setTool === "function" && state.tool !== "select")
+        setTool("select");
       if (typeof selectLink === "function") selectLink(l.id);
       activateItem(li);
     });
@@ -993,13 +1303,82 @@ function updateLayersPanel() {
     box.appendChild(li);
   }
 
+  // 🔹 3) 폴리곤 (현재 층 전용)
+  for (const p of polysF) {
+    const li = document.createElement("div");
+    li.className = "layer-item polygon";
+    li.dataset.type = "polygon";
+    li.dataset.id = p.id;
+
+    const left = document.createElement("div");
+    left.className = "layer-left";
+    left.innerHTML = `
+    <span class="icon-poly"></span>
+    <span class="label">⬛ ${p.name || `PG_${p.pseq ?? ""}`}</span>
+  `;
+
+    li.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof setTool === "function" && state.tool !== "select")
+        setTool("select");
+      if (typeof selectPolygon === "function") selectPolygon(p.id);
+      activateItem(li);
+    });
+
+    const right = document.createElement("div");
+    right.className = "layer-right mono small";
+    right.textContent = `${(p.nodes || []).length} pts`;
+
+    li.appendChild(left);
+    li.appendChild(right);
+    box.appendChild(li);
+  }
+
+  // compass
+  // if (state.northRef && (state.northRef.from_node || state.northRef.to_node)) {
+  //   const li = document.createElement("div");
+  //   li.className = "layer-item compass";
+  //   li.dataset.type = "compass";
+  //   li.dataset.id = "compass";
+
+  //   const fromN = getNodeById(state.northRef.from_node);
+  //   const toN = getNodeById(state.northRef.to_node);
+
+  //   const left = document.createElement("div");
+  //   left.className = "layer-left";
+  //   left.innerHTML = `
+  //     <span class="icon-compass">🧭</span>
+  //     <span class="label">${fromN ? nodeLabel(fromN) : "?"} → ${
+  //     toN ? nodeLabel(toN) : "?"
+  //   }</span>
+  //   `;
+
+  //   li.addEventListener("click", (e) => {
+  //     e.preventDefault();
+  //     e.stopPropagation();
+  //     if (typeof setTool === "function") setTool("compass");
+  //     if (typeof selectCompass === "function") selectCompass();
+  //     activateItem(li);
+  //   });
+
+  //   const right = document.createElement("div");
+  //   right.className = "layer-right mono small";
+  //   right.textContent = `${state.northRef.azimuth}°`;
+
+  //   li.appendChild(left);
+  //   li.appendChild(right);
+  //   box.appendChild(li);
+  // }
+
   if (state.selection) {
-    const q = `.layer-item[data-type="${state.selection.type}"][data-id="${CSS.escape(String(state.selection.id))}"]`;
+    const q = `.layer-item[data-type="${
+      state.selection.type
+    }"][data-id="${CSS.escape(String(state.selection.id))}"]`;
     const cur = box.querySelector(q);
     if (cur) cur.classList.add("active");
-  }  
+  }
 }
-
 
 function hasLinkBetween(a, b) {
   return state.graph.links.some(
@@ -1074,8 +1453,8 @@ function fillNodeSelect(selectEl, floor, selectedId) {
   selectEl.innerHTML = "";
   for (const n of list) {
     const opt = document.createElement("option");
-    opt.value = String(n.id);           // 항상 문자열
-    opt.textContent = nodeLabel(n);     // 이름 없으면 N_{nseq}
+    opt.value = String(n.id); // 항상 문자열
+    opt.textContent = nodeLabel(n); // 이름 없으면 N_{nseq}
     if (String(n.id) === sel) opt.selected = true;
     selectEl.appendChild(opt);
   }
@@ -1083,7 +1462,7 @@ function fillNodeSelect(selectEl, floor, selectedId) {
 
 function selectNode(id) {
   const n = getNodeById(id);
-  
+
   if (currentFloor() !== Number(n.floor ?? 0)) {
     setFloor(Number(n.floor ?? 0));
   }
@@ -1092,6 +1471,7 @@ function selectNode(id) {
   els.selLbl.textContent = `👆 선택: 노드 ${n.nseq}`;
   els.nodeGroup.style.display = "block";
   els.linkGroup.style.display = "none";
+  els.polyGroup.style.display = "none";
   els.nodeId.value = `N_${n.nseq}`;
   els.nodeName.value = n.name || "";
   els.nodeX.value = Math.round(n.x);
@@ -1102,21 +1482,21 @@ function selectNode(id) {
 }
 
 function selectLink(id) {
-  const l = (state.graph?.links || []).find(x => String(x.id) === String(id));
-  console.log(l);
-  
+  const l = (state.graph?.links || []).find((x) => String(x.id) === String(id));
+
   state.selection = { type: "link", id };
 
   els.selLbl.textContent = `👆 선택: 링크 lk_${l?.lseq}`;
   els.nodeGroup.style.display = "none";
   els.linkGroup.style.display = "block";
+  els.polyGroup.style.display = "none";
   els.linkId.value = `lk_${l.lseq}`;
 
-  const floor = Number(l.floor ?? curFloor());
+  const floor = Number(l.floor ?? currentFloor());
 
   // 드롭다운: 반드시 링크의 층 노드만
   fillNodeSelect(els.linkFrom, floor, l.a);
-  fillNodeSelect(els.linkTo,   floor, l.b);  
+  fillNodeSelect(els.linkTo, floor, l.b);
 
   els.linkFrom.onchange = () => {
     const newId = els.linkFrom.value;
@@ -1149,11 +1529,82 @@ function selectLink(id) {
   if (typeof updateLayersPanel === "function") updateLayersPanel();
 }
 
+function selectPolygon(id) {
+  const p = (state.graph.polygons || []).find((x) => x.id === id);
+  if (!p) return;
+
+  const f = Number(p.floor ?? 0);
+  if (currentFloor() !== f) setFloor(f);
+
+  state.selection = { type: "polygon", id: p.id };
+  if (els.selLbl) els.selLbl.textContent = `👆 선택: 폴리곤 ${p.pseq ?? ""}`;
+
+  // 우측 속성 패널 갱신
+  refreshPolygonPanel(p);
+
+  // 노드/링크 패널 숨기기
+  if (els.nodeGroup) els.nodeGroup.style.display = "none";
+  if (els.linkGroup) els.linkGroup.style.display = "none";
+}
+
+if (els.polyName) {
+  els.polyName.addEventListener("input", () => {
+    if (state.selection?.type !== "polygon") return;
+    const p = (state.graph.polygons || []).find(
+      (x) => x.id === state.selection.id
+    );
+    if (!p) return;
+    p.name = els.polyName.value.trim();
+    redrawOverlay();
+  });
+}
+
+if (els.polyPts) {
+  els.polyPts.forEach((ui, idx) => {
+    if (!ui) return;
+
+    function updatePointFromInputs() {
+      if (state.selection?.type !== "polygon") return;
+      const p = (state.graph.polygons || []).find(
+        (x) => x.id === state.selection.id
+      );
+      if (!p) return;
+
+      const xVal = Number(ui.x.value);
+      const yVal = Number(ui.y.value);
+      if (!Number.isFinite(xVal) || !Number.isFinite(yVal)) return;
+
+      const floor = Number(p.floor ?? currentFloor());
+      const nearest = findNearestNodeForPoint(floor, { x: xVal, y: yVal });
+
+      if (nearest) {
+        // 실제 데이터에는 "좌표"가 아니라 "노드 id"를 저장
+        p.nodes = p.nodes || [];
+        p.nodes[idx] = nearest.id;
+        ui.node.textContent = nodeLabel(nearest);
+        // 좌표칸은 다시 노드 실제 좌표로 맞춰준다
+        ui.x.value = Math.round(nearest.x);
+        ui.y.value = Math.round(nearest.y);
+      } else {
+        // 근처에 노드가 없으면 매칭 해제
+        if (Array.isArray(p.nodes)) p.nodes[idx] = null;
+        ui.node.textContent = "";
+      }
+
+      redrawOverlay();
+    }
+
+    ui.x.addEventListener("change", updatePointFromInputs);
+    ui.y.addEventListener("change", updatePointFromInputs);
+  });
+}
+
 function clearSelection() {
   state.selection = { type: null, id: null };
   els.selLbl.textContent = "👆 선택: 없음";
   els.nodeGroup.style.display = "none";
   els.linkGroup.style.display = "none";
+  els.polyGroup.style.display = "none";
   redrawOverlay();
 }
 
@@ -1206,15 +1657,16 @@ els.modalOk.addEventListener("click", async () => {
     const saved = await apiCreateProject(payload);
 
     // 4) 전역 상태/UI 반영
-    state.projectId = saved.id; // ✅ DB id 보관 (이후 PUT에 사용)
+    state.projectId = saved.id; // DB id 보관 (이후 PUT에 사용)
     state.projectName = projectName;
     state.projectAuthor = projectAuthor;
     state.floors = floors;
     state.startFloor = startFloor;
     state.scale = scale;
     state.currentFloor = startFloor;
-    // state.currentFloor = Math.max(0, startFloor - 1);
-    state.graph = { nodes: [], links: [] }; // 네 기존 편집 상태 초기화 유지
+    state.graph = { nodes: [], links: [], polygons: [] }; // 네 기존 편집 상태 초기화 유지
+    state.seq.poly = state.seq?.poly || {};
+
     state.modified = false;
     resetCounters();
 
@@ -1271,7 +1723,7 @@ els.modalOk.addEventListener("click", async () => {
 els.floorSelect.addEventListener("change", (e) => {
   state.currentFloor = Number(els.floorSelect.value);
   state.currentfloor = state.currentFloor; // 혼용 방지
-  
+
   // 배경
   renderFloor();
 
@@ -1347,6 +1799,27 @@ els.overlay.addEventListener("pointermove", (ev) => {
   const pt = imagePointFromClient(ev);
   state.mouse = { x: pt.x, y: pt.y };
 
+  // // 🔹 폴리곤 도구일 때: 진행 중인 폴리곤 드래프트의 "미리보기 점" 업데이트
+  // if (state.tool === "polygon" && state.polygonDraft) {
+  //   const tol = state.snap?.tol ?? 10;
+  //   const { v, h } = getAxisSnapCandidates(pt.x, pt.y, tol);
+
+  //   let x = pt.x;
+  //   let y = pt.y;
+
+  //   if (v && h) {
+  //     x = v.x;
+  //     y = h.y;
+  //   } else if (v) {
+  //     x = v.x;
+  //   } else if (h) {
+  //     y = h.y;
+  //   }
+
+  //   // 드래프트의 previewIdx 위치에 현재 마우스 위치 반영
+  //   state.polygonDraft.points[state.polygonDraft.previewIdx] = { x, y };
+  // }
+
   // 노드 도구일 때 스냅 후보 업데이트
   if (state.tool === "node" && state.snap.active) {
     state.snap.cand = getAxisSnapCandidates(pt.x, pt.y, state.snap.tol);
@@ -1386,16 +1859,17 @@ els.overlay.addEventListener("pointermove", (ev) => {
   }
 
   // 롱프레스 중이면 안내선만 보여준다 (스냅은 하지 않음)
-  if (state.longPress.active && state.longPress.anchor) {
-    const dx = Math.abs(state.mouse.x - state.longPress.anchor.x);
-    const dy = Math.abs(state.mouse.y - state.longPress.anchor.y);
-    const orient = dx >= dy ? "h" : "v";
-    state.snapGuide = { anchor: state.longPress.anchor, orient };
-  }
+  // if (state.longPress.active && state.longPress.anchor) {
+  //   const dx = Math.abs(state.mouse.x - state.longPress.anchor.x);
+  //   const dy = Math.abs(state.mouse.y - state.longPress.anchor.y);
+  //   const orient = dx >= dy ? "h" : "v";
+  //   state.snapGuide = { anchor: state.longPress.anchor, orient };
+  // }
 });
 
 let lpStartClient = null;
 
+// node
 els.overlay.addEventListener(
   "pointerdown",
   (ev) => {
@@ -1424,7 +1898,7 @@ els.overlay.addEventListener(
       y = h.y;
     }
 
-    // (옵션) Shift 직교 스냅 우선하려면 이 블록을 위로 올려
+    // (옵션) Shift 직교 스냅 우선하려면 이 블록을 위로 올리기
     if (state.keys.shift && state.graph.nodes.length) {
       const last = state.graph.nodes[state.graph.nodes.length - 1];
       const dx = Math.abs(x - last.x),
@@ -1475,11 +1949,58 @@ function cancelLongPress() {
   state.longPress.active = false;
 }
 
-function endLongPress() {
-  cancelLongPress();
-  state.snapGuide = null;
+function addVertexToPolygonDraft(nodeId) {
+  const n = getNodeById(nodeId);
+  if (!n) return;
+
+  const f = Number(n.floor ?? currentFloor());
+
+  if (!state.polygonDraft) {
+    state.polygonDraft = { floor: f, nodes: [nodeId] };
+  } else {
+    // 다른 층 노드는 무시
+    if (Number(state.polygonDraft.floor) !== f) return;
+    // 같은 노드를 여러 번 찍을지 여부는 정책에 따라
+    state.polygonDraft.nodes.push(nodeId);
+  }
+
   redrawOverlay();
 }
+
+function finalizePolygon() {
+  const d = state.polygonDraft;
+  if (!d || !Array.isArray(d.nodes) || d.nodes.length < 3) {
+    state.polygonDraft = null;
+    redrawOverlay();
+    return;
+  }
+
+  const f = Number(d.floor ?? currentFloor());
+
+  state.seq.polygon = state.seq.polygon || {};
+  state.seq.polygon[f] = (state.seq.polygon[f] ?? 0) + 1;
+
+  const newPoly = {
+    id: `pg_${Date.now()}`, // node의 nextNodeId처럼, 필요하면 nextPolyId()로 빼도 됨
+    floor: f,
+    pseq: nextPolySeq(f), // 층별 표기 번호
+    name: "",
+    nodes: [...d.nodes], // 이 폴리곤을 이루는 노드 id 리스트
+  };
+
+  state.graph.polygons = state.graph.polygons || [];
+  state.graph.polygons.push(newPoly);
+
+  state.polygonDraft = null;
+  redrawOverlay();
+}
+
+els.overlay.addEventListener("dblclick", (ev) => {
+  if (state.tool !== "polygon") return;
+  if (!state.polygonDraft) return;
+  finalizePolygon();
+  ev.preventDefault();
+});
 
 function endLongPressDeferred(e) {
   // 롱프레스 상태가 아니면 무시
@@ -1614,11 +2135,16 @@ function setTool(next) {
   }
 
   if (next === "compass") {
+    els.nodeGroup.style.display = "none";
+    els.linkGroup.style.display = "none";
+    els.polyGroup.style.display = "none";
     els.compassPanel.style.display = "";
     populateCompassNodeSelects();
   } else {
     els.compassPanel.style.display = "none";
   }
+
+  if (next !== "polygon") state.polygonDraft = null;
 
   // 여기 두 줄이 맨 끝에 오도록
   applyToolCursor();
@@ -1656,8 +2182,20 @@ els.btnCompassApply.addEventListener("click", () => {
     els.compassInfo.textContent = "Azimuth는 0 이상 360 미만으로 입력하세요.";
     return;
   }
-  state.northRef = { from_node: a, to_node: b, azimuth: +az.toFixed(1) };
-  els.compassInfo.textContent = `설정됨: ${a} → ${b}, ${state.northRef.azimuth}°`;
+
+  const A = getNodeById(a);
+  const B = getNodeById(b);
+
+  state.northRef = {
+    from_node: A ? A.id : null,
+    to_node: B ? B.id : null,
+    azimuth: +az.toFixed(1),
+  };
+  // UI 표시용 라벨
+  const fromLabel = A ? nodeLabel(A) : a;
+  const toLabel = B ? nodeLabel(B) : b;
+
+  els.compassInfo.textContent = `설정됨: ${fromLabel} → ${toLabel}, ${state.northRef.azimuth}°`;
   els.projState.textContent = "상태: 수정됨";
   els.projState.style.color = "#e67e22";
 });
@@ -1672,35 +2210,6 @@ els.btnCompassClear.addEventListener("click", () => {
 
 // ----------------------------------------------------
 // ------------------ save function -------------------
-
-// --- Directory FS helpers ---
-async function pickProjectDirForSave() {
-  if (!window.showDirectoryPicker) return null;
-  return await window.showDirectoryPicker({ mode: "readwrite" });
-}
-async function pickProjectDirForOpen() {
-  if (!window.showDirectoryPicker) return null;
-  return await window.showDirectoryPicker({ mode: "read" });
-}
-async function ensureSubDir(dirHandle, name) {
-  return await dirHandle.getDirectoryHandle(name, { create: true });
-}
-async function writeFile(dirHandle, filename, blob) {
-  const fh = await dirHandle.getFileHandle(filename, { create: true });
-  const w = await fh.createWritable();
-  await w.write(blob);
-  await w.close();
-}
-async function readTextFile(dirHandle, filename) {
-  const fh = await dirHandle.getFileHandle(filename);
-  const f = await fh.getFile();
-  return await f.text();
-}
-async function readBlobFile(dirHandle, filename) {
-  const fh = await dirHandle.getFileHandle(filename);
-  const f = await fh.getFile();
-  return f;
-}
 async function saveProjectToDirectory() {
   if (!window.showDirectoryPicker)
     throw new Error("Directory picker not available");
@@ -1711,7 +2220,6 @@ async function saveProjectToDirectory() {
   // 2) 프로젝트 이름 폴더 만들기 (이미 있으면 그대로 사용: 덮어쓰기 동작)
   const projName = getProjectName();
   const projDir = await baseDir.getDirectoryHandle(projName, { create: true });
-
   const projAuthor = document.getElementById("projectAuthor")?.value;
 
   // 3) images/ 하위 폴더 확보
@@ -1748,8 +2256,7 @@ async function saveProjectToDirectory() {
 
   // 5) 그래프 JSON 생성 + images/meta/north_reference 포함
   const json = serializeToInstarFormat();
-  json.images = imagesField;
-  json.meta = {
+  const meta = {
     floors: state.floors,
     startFloor: state.startFloor,
     currentFloor: state.currentFloor,
@@ -1757,32 +2264,40 @@ async function saveProjectToDirectory() {
     projectName: projName,
     projectAuthor: projAuthor,
   };
+  json.meta = meta;
+
+  const exportJson = JSON.parse(JSON.stringify(json)); // deep copy
+  exportJson.images = imagesField;
 
   // 6) graph.json 저장 (프로젝트 폴더 직하)
   const graphFh = await projDir.getFileHandle("graph.json", { create: true });
   const gw = await graphFh.createWritable();
   await gw.write(
-    new Blob([JSON.stringify(json, null, 2)], { type: "application/json" })
+    new Blob([JSON.stringify(exportJson, null, 2)], {
+      type: "application/json",
+    })
   );
   await gw.close();
+
+  await exportPolygonsSVG(projDir);
 
   const saved = await apiUpdateProject(state.projectId, json);
   state.modified = false;
 
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
-  els.status.textContent = `저장 완료: ${projName}/ (images + graph.json)`;
+  els.status.textContent = `저장 완료: ${projName}/ (images + graph.json + polygons.svg)`;
 }
 
 // reformat the data
 function serializeToInstarFormat() {
   // 0) north_reference
-  const fromNode = state.northRef.from_node;
-  const toNode = state.northRef.to_node;
+  const from_node = state.northRef.from_node;
+  const to_node = state.northRef.to_node;
   const azimuth = state.northRef.azimuth;
   const northObj = {
-    fromNode,
-    toNode,
+    from_node,
+    to_node,
     azimuth,
   };
 
@@ -1819,18 +2334,18 @@ function serializeToInstarFormat() {
     nodes: nodesObj,
     connections: conn,
   };
-  
+
   out._editor = {
     floors: state.floors,
     startFloor: state.startFloor,
     currentFloor: state.currentFloor,
     node_meta: Object.fromEntries(
-      (state.graph.nodes || []).map(n => [
+      (state.graph.nodes || []).map((n) => [
         n.id,
-        { floor: Number(n.floor ?? 0), nseq: Number(n.nseq ?? 0) }
+        { floor: Number(n.floor ?? 0), nseq: Number(n.nseq ?? 0) },
       ])
     ),
-    links: (state.graph.links || []).map(l => ({
+    links: (state.graph.links || []).map((l) => ({
       id: l.id,
       a: l.a,
       b: l.b,
@@ -1838,6 +2353,24 @@ function serializeToInstarFormat() {
       lseq: Number(l.lseq ?? 0),
     })),
   };
+
+  const polys = state.graph?.polygons || [];
+
+  if (!out._editor) out._editor = {};
+  if (!out._editor.shapes) out._editor.shapes = {};
+
+  out._editor.shapes.polygons = (state.graph.polygons || []).map((p) => ({
+    id: p.id,
+    floor: Number(p.floor ?? 0),
+    pseq: Number(p.pseq ?? 0) || 0,
+    name: p.name || "",
+    nodes: Array.isArray(p.nodes) ? [...p.nodes] : [],
+    // 옵션: 디버깅용으로 좌표도 함께 남길 수 있음
+    points: (Array.isArray(p.nodes) ? p.nodes : [])
+      .map((nid) => getNodeById(nid))
+      .filter(Boolean)
+      .map((n) => [Math.round(n.x), Math.round(n.y)]),
+  }));
 
   return out;
 }
@@ -1954,8 +2487,6 @@ function applyFromInstarFormat(json) {
       }
     : { from_node: null, to_node: null, azimuth: 0 };
 
-
-  
   // --- 편집기 메타 복원 ---
   const meta = json._editor || {};
 
@@ -1965,7 +2496,7 @@ function applyFromInstarFormat(json) {
     const m = nodeMeta[n.id];
     if (m) {
       if (m.floor != null) n.floor = Number(m.floor);
-      if (m.nseq != null)  n.nseq  = Number(m.nseq);
+      if (m.nseq != null) n.nseq = Number(m.nseq);
     } else {
       // 없으면 최소 기본값
       if (n.floor == null) n.floor = Number(json.meta?.startFloor ?? 0);
@@ -1978,7 +2509,8 @@ function applyFromInstarFormat(json) {
     const ok = [];
     for (const l of meta.links) {
       // 노드 존재 검증
-      if (!nodes.find((x) => x.id === l.a) || !nodes.find((x) => x.id === l.b)) continue;
+      if (!nodes.find((x) => x.id === l.a) || !nodes.find((x) => x.id === l.b))
+        continue;
       ok.push({
         id: l.id || `lk_${ok.length + 1}`,
         a: l.a,
@@ -1990,13 +2522,65 @@ function applyFromInstarFormat(json) {
     linksArr = ok;
   }
 
+  const polyRaw =
+    json?._editor?.shapes?.polygons ||
+    json?._editor?.polygons || // 혹시 옛 포맷 대비 (없으면 무시)
+    [];
+
+  state.graph.polygons = (polyRaw || []).map((p, idx) => {
+    const floor = Number(p.floor ?? 0);
+    const pseq =
+      p.pseq != null && !Number.isNaN(Number(p.pseq))
+        ? Number(p.pseq)
+        : idx + 1;
+
+    const id = p.id || `pg_${Date.now()}_${idx}`;
+
+    let nodeIds = Array.isArray(p.nodes) ? p.nodes.slice() : [];
+
+    // 만약 옛 포맷으로 points만 있고 nodes가 없다면,
+    // 가까운 노드 찾아서 매핑 시도 (있으면 좋고, 아니어도 괜찮음)
+    if (!nodeIds.length && Array.isArray(p.nodes)) {
+      const pts = p.nodes.map((pt) =>
+        Array.isArray(pt) ? { x: pt[0], y: pt[1] } : { x: pt.x, y: pt.y }
+      );
+      nodeIds = pts
+        .map((pt) => findNearestNodeForPoint(floor, pt, 20))
+        .filter(Boolean)
+        .map((n) => n.id);
+    }
+    nodeIds = nodeIds.filter((nid) => nodes.find((n) => n.id === nid));
+
+    return {
+      id,
+      floor,
+      pseq,
+      name: p.name || "",
+      nodes: nodeIds,
+    };
+  });
+
+  // 층별 polygon 시퀀스 최대값으로 state.seq.polygon 재구성
+  state.seq = state.seq || {};
+  state.seq.polygon = {};
+
+  const polygons = state.graph.polygons || [];
+
+  for (const p of state.graph.polygons) {
+    const f = Number(p.floor ?? 0);
+    const cur = state.seq.polygon[f] ?? 0;
+    const val = p.pseq || 0;
+    state.seq.polygon[f] = Math.max(cur, val);
+  }
+
   // 3) 층 메타
   if (Number.isInteger(meta.floors)) state.floors = meta.floors;
   if (Number.isInteger(meta.startFloor)) state.startFloor = meta.startFloor;
-  if (Number.isInteger(meta.currentFloor)) state.currentFloor = meta.currentFloor;
+  if (Number.isInteger(meta.currentFloor))
+    state.currentFloor = meta.currentFloor;
 
   // 4) 적용
-  state.graph = { nodes, links: linksArr };
+  state.graph = { nodes, links: linksArr, polygons };
 
   // 5) 층별 시퀀스 복구(누락 채움)
   rebuildSeqFromData();
@@ -2005,7 +2589,7 @@ function applyFromInstarFormat(json) {
     nodes: Array.isArray(nodes)
       ? nodes
       : Object.fromEntries(nodes.map((n) => [n.id, n])),
-    links,
+    links: linksArr,
   });
 
   if (json.meta) {
@@ -2057,23 +2641,6 @@ function applyFromInstarFormat(json) {
   // 층 리스트 갱신 + 현재 층 이미지 표시
   populateFloorSelect?.();
   renderFloor?.();
-}
-
-async function uploadFloorImage(projectId, floorIndex, file) {
-  const fd = new FormData();
-  fd.append("project", projectId ?? state.projectId ?? "default");
-  fd.append("floor", floorIndex);
-  fd.append("file", file);
-  const res = await fetch(`${API_BASE}/upload_floor_image/`, {
-    method: "POST",
-    body: fd,
-  });
-  if (!res.ok) throw new Error("upload failed");
-  const json = await res.json(); // { ok:true, url:"http://127.0.0.1:8000/media/..." or "/media/..." }
-  const url = json.url?.startsWith("http")
-    ? json.url
-    : `${API_ORIGIN}${json.url}`;
-  return { ok: json.ok, url };
 }
 
 // connect function and save button
@@ -2187,5 +2754,63 @@ els.btnOpen.addEventListener("click", async () => {
     openModal();
   }
 })();
+
+// export polygon to svg
+async function exportPolygonsSVG(projDir) {
+  const floor = currentFloor();
+  const polys = (state.graph.polygons || []).filter(
+    (p) => Number(p.floor ?? 0) === Number(floor)
+  );
+
+  if (!polys.length) {
+    console.warn("현재 층에 폴리곤 없음");
+    return;
+  }
+
+  // --- SVG 크기: 배경 이미지 크기 사용 ---
+  let w = 1000;
+  let h = 1000;
+  const img = els.bgImg || document.getElementById("bgImage") || null;
+  if (img && img.naturalWidth) {
+    w = img.naturalWidth;
+    h = img.naturalHeight;
+  }
+
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("xmlns", NS);
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+
+  // 폴리곤 렌더링
+  for (const p of polys) {
+    const pts = (p.nodes || []).map((nid) => getNodeById(nid)).filter(Boolean);
+    if (pts.length < 3) continue;
+
+    const poly = document.createElementNS(NS, "polygon");
+    const ptsAttr = pts.map((n) => `${n.x},${n.y}`).join(" ");
+    poly.setAttribute("points", ptsAttr);
+    poly.setAttribute("fill", "none");
+    poly.setAttribute("stroke", "#000");
+    poly.setAttribute("stroke-width", "1");
+    svg.appendChild(poly);
+  }
+
+  // Blob 변환
+  const serialized = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([serialized], { type: "image/svg+xml" });
+
+  // 파일명
+  const projName = getProjectName();
+  const floorNum = String(floor);
+  const fileName = `${projName}_floor${floorNum}_polygons.svg`;
+
+  // --- 프로젝트 폴더에 저장 ---
+  const fh = await projDir.getFileHandle(fileName, { create: true });
+  const wtr = await fh.createWritable();
+  await wtr.write(blob);
+  await wtr.close();
+}
 
 setTool("select");
