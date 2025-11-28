@@ -131,12 +131,36 @@ function applySnapshot(snap) {
   updateLayersPanel?.();
 }
 
+function snapshotCurrent() {
+  try {
+    // Instar 포맷 기준으로 비교하면, meta/azimuth 등도 같이 감지 가능
+    return JSON.stringify(serializeToDataFormat());
+  } catch {
+    return null;
+  }
+}
+
+function updateSavedSnapshot() {
+  state._savedSnapshot = snapshotCurrent();
+  state.modified = false;
+}
+
+function hasUnsavedChanges() {
+  if (!state._savedSnapshot) return false;
+  const cur = snapshotCurrent();
+  return cur !== state._savedSnapshot;
+}
+
+
 function resetHistory() {
-  state.history.stack = [];
-  state.history.index = -1;
-  const snap = makeSnapshot();
+  state.history = { stack: [], index: -1, max: 100 };
+  const snap = makeSnapshot(); // 현재 상태 (로드 직후)
   state.history.stack.push(snap);
   state.history.index = 0;
+
+  // 저장 기준도 같이 초기화
+  state._savedSnapshot = snapshotCurrent();
+  state.modified = false;
 }
 
 function pushHistory() {
@@ -211,6 +235,8 @@ const els = {
   selLbl: document.getElementById("selLbl"),
   layerInfo: document.getElementById("layerInfo"),
   totalInfo: document.getElementById("totalInfo"),
+
+  toast: document.getElementById("toast"),
 
   // modal
   modalBack: document.getElementById("newModalBack"),
@@ -300,6 +326,18 @@ function setEnabled(enabled) {
   els.btnOpen?.removeAttribute("disabled");
   els.btnOpen.disabled = false;
 }
+
+let toastTimer = null;
+function showToast(msg = "저장되었습니다.") {
+  if (!els.toast) return;
+  els.toast.textContent = msg;
+  els.toast.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    els.toast.classList.remove("show");
+  }, 1800);
+}
+
 function openModal() {
   els.modalBack.style.display = "flex";
   // seed selects
@@ -642,6 +680,7 @@ function activateProject() {
   renderFloor();
 
   resetHistory();
+  updateSavedSnapshot();
 }
 
 function populateCompassNodeSelects() {
@@ -876,13 +915,18 @@ window.addEventListener("keyup", (e) => {
   }
   if (e.key === "Alt") {
     state.keys.alt = false;
-    // 손 떼면 pointermove에서 다시 cand 계산 들어감
   }
 });
 
+window.addEventListener("beforeunload", (e) => {
+  if (!state.loaded) return;
+  if (!hasUnsavedChanges()) return;
+  e.preventDefault();
+  e.returnValue = ""; // 크롬 등에서 기본 경고창 띄우는 트리거
+});
 
 
-// 휠로 확대/축소 (Ctrl 불필요) – 마우스 기준 줌
+// 휠로 확대/축소 – 마우스 기준 줌
 els.canvas.addEventListener(
   "wheel",
   (e) => {
@@ -1269,8 +1313,6 @@ function redrawOverlay() {
       e.stopPropagation();
       e.preventDefault();
 
-      pushHistory();
-
       selectNode(n.id);
       const { x, y } = imagePointFromClient(e);
       draggingNodeId = n.id;
@@ -1575,10 +1617,10 @@ function handleLinkPick(nodeId) {
       b: B.id,
     };
 
-    pushHistory();
-
+    
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
+    pushHistory();
     selectLink(newLink.id);
     redrawOverlay();
   }
@@ -1742,8 +1784,6 @@ function deleteCurrentSelection() {
   const g = state.graph;
   if (!sel || !g) return;
 
-  pushHistory();
-
   const { type, id } = sel;
 
   if (type === "node") {
@@ -1782,6 +1822,8 @@ function deleteCurrentSelection() {
 
   redrawOverlay?.();
   updateLayersPanel?.();
+
+  pushHistory();
 }
 
 
@@ -2065,9 +2107,10 @@ els.overlay.addEventListener(
     };
 
     // 실제로 그래프가 바뀌기 직전에 스냅샷
+    state.graph.nodes.push(newNode);
+
     pushHistory();
 
-    state.graph.nodes.push(newNode);
     selectNode(newNode.id);
     redrawOverlay();
 
@@ -2085,6 +2128,9 @@ els.overlay.addEventListener("pointerup", (ev) => {
     dragStart = null;
     nodeStart = null;
     state.snapGuide = null;
+
+    pushHistory();
+    
     try {
       els.overlay.releasePointerCapture(ev.pointerId);
     } catch {}
@@ -2133,13 +2179,14 @@ function finalizePolygon() {
     nodes: [...d.nodes], // 이 폴리곤을 이루는 노드 id 리스트
   };
 
-  pushHistory();
-
+  
   state.graph.polygons = state.graph.polygons || [];
   state.graph.polygons.push(newPoly);
-
+  
   state.polygonDraft = null;
+
   redrawOverlay();
+  pushHistory();
 }
 
 els.overlay.addEventListener("dblclick", (ev) => {
@@ -2295,6 +2342,8 @@ els.btnCompassApply.addEventListener("click", () => {
   els.compassInfo.textContent = `설정됨: ${fromLabel} → ${toLabel}, ${state.northRef.azimuth}°`;
   els.projState.textContent = "상태: 수정됨";
   els.projState.style.color = "#e67e22";
+
+  showToast("방위각이 설정되었습니다.");
 });
 
 els.btnCompassClear.addEventListener("click", () => {
@@ -2303,6 +2352,8 @@ els.btnCompassClear.addEventListener("click", () => {
   populateCompassNodeSelects();
   els.projState.textContent = "상태: 수정됨";
   els.projState.style.color = "#e67e22";
+
+  showToast("방위각이 삭제되었습니다.");
 });
 
 // ----------------------------------------------------
@@ -2742,16 +2793,16 @@ function applyFromDataFormat(json) {
 
 // connect function and save button
 // 저장(DB)
-els.btnSave.addEventListener("click", async () => {
-  try {
-    if (!state.projectId) {
-      alert("저장할 프로젝트가 없습니다. 먼저 새 프로젝트를 생성하세요.");
-      return;
-    }
+async function saveToServer() {
+  if (!state.projectId) {
+    alert("저장할 프로젝트가 없습니다. 먼저 새 프로젝트를 생성하세요.");
+    return false;
+  }
 
+  try {
     // 에디터 상태 → data 포맷
     const data = serializeToDataFormat();
-
+  
     // DB에 메타/스케일/시작층도 함께 보관
     data.meta = {
       projectName: getProjectName(),
@@ -2763,20 +2814,31 @@ els.btnSave.addEventListener("click", async () => {
     };
     data.scale = Number(state.scale) || Number(els.scale?.value) || 0;
     data.startFloor = state.startFloor ?? 1;
-
+  
     const saved = await apiUpdateProject(state.projectId, data);
-
+  
     state.modified = false;
     els.projState.textContent = "상태: 저장됨";
     els.projState.style.color = "#27ae60";
     els.status.textContent = `DB 저장 완료 (id: ${saved.id})`;
+
+    state._savedSnapshot = snapshotCurrent();
+
     console.log("DB 저장 완료:", saved);
+    return true;
   } catch (e) {
     console.error(e);
     els.status.textContent = "DB 저장 실패";
     alert("DB 저장에 실패했습니다. 콘솔을 확인해 주세요.");
+    return false;
   }
+}
+
+els.btnSave.addEventListener("click", async () => {
+  const ok = await saveToServer();
+  if (ok) showToast("저장되었습니다.");
 });
+
 
 // 내보내기
 els.btnExport.addEventListener("click", async () => {

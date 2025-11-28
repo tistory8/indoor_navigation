@@ -10,12 +10,14 @@
 </head>
 
 <body>
+  <div id="toast" class="toast">저장되었습니다.</div>
+
   <!-- 상단 바 -->
   <div class="topbar">
     <button class="btn primary" id="btnNew">새로 만들기</button>
-    <button class="btn" id="btnOpen">열기</button>
     <button class="btn" id="btnSave" disabled>저장</button>
     <button class="btn" id="btnExport" disabled>내보내기</button>
+    <button class="btn" id="btnOpen">열기</button>
     <div style="flex: 1"></div>
     <span class="muted" id="zoomLbl">🔍 100%</span>
     <span class="muted" id="floorLbl" style="margin-left: 8px">🏢 층: -</span>
@@ -26,7 +28,7 @@
     <button class="toolbtn" data-tool="select">👆</button>
     <button class="toolbtn" data-tool="node">🔵</button>
     <button class="toolbtn" data-tool="link">🔗</button>
-    <button class="toolbtn" data-tool="arrow">➡️</button>
+    <button class="toolbtn" data-tool="arrow" disabled>➡️</button>
     <button class="toolbtn" data-tool="polygon">📐</button>
     <button class="toolbtn" data-tool="compass">🧭</button>
   </div>
