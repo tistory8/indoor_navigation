@@ -90,11 +90,96 @@ const state = {
 };
 state.mouse = { x: 0, y: 0 };
 
+
+// === Undo/Redo history ===
+state.history = {
+  stack: [],
+  index: -1,
+  max: 50, // 최대 50단계까지 기억
+};
+
+function makeSnapshot() {
+  return {
+    graph: state.graph
+      ? JSON.parse(JSON.stringify(state.graph))
+      : { nodes: [], links: [], polygons: [] },
+    currentFloor: state.currentFloor,
+    selection: state.selection ? { ...state.selection } : null,
+  };
+}
+
+function applySnapshot(snap) {
+  if (!snap) return;
+
+  state.graph = snap.graph
+    ? JSON.parse(JSON.stringify(snap.graph))
+    : { nodes: [], links: [], polygons: [] };
+
+  state.currentFloor =
+    typeof snap.currentFloor === "number"
+      ? snap.currentFloor
+      : state.currentFloor;
+
+  state.selection = snap.selection ? { ...snap.selection } : null;
+
+  if (els.floorSelect) {
+    els.floorSelect.value = String(state.currentFloor);
+  }
+
+  renderFloor?.();
+  redrawOverlay?.();
+  updateLayersPanel?.();
+}
+
+function resetHistory() {
+  state.history.stack = [];
+  state.history.index = -1;
+  const snap = makeSnapshot();
+  state.history.stack.push(snap);
+  state.history.index = 0;
+}
+
+function pushHistory() {
+  const h = state.history;
+  const snap = makeSnapshot();
+
+  // Undo 후 새로운 작업이 오면, 그 뒤 redo 라인은 날린다
+  if (h.index < h.stack.length - 1) {
+    h.stack.splice(h.index + 1);
+  }
+
+  h.stack.push(snap);
+
+  // 최대 개수 초과 시 앞에서 하나 제거
+  if (h.stack.length > h.max) {
+    h.stack.shift();
+  }
+
+  h.index = h.stack.length - 1;
+}
+
+function undo() {
+  const h = state.history;
+  if (h.index <= 0) return;
+
+  h.index -= 1;
+  const snap = h.stack[h.index];
+  applySnapshot(snap);
+}
+
+function redo() {
+  const h = state.history;
+  if (h.index < 0 || h.index >= h.stack.length - 1) return;
+
+  h.index += 1;
+  const snap = h.stack[h.index];
+  applySnapshot(snap);
+}
+
 // snapshot
-state.keys = { shift: false };
+state.keys = { shift: false, alt: false }; // Alt까지 같이 쓰고 싶으면 여기서 정의
 state.snapGuide = null;
-state.longPress = { active: false, timer: null, threshold: 220, anchor: null };
-state.longPressMoveCancel = 6;
+
 
 // save
 state.northRef = state.northRef || {
@@ -555,6 +640,8 @@ function activateProject() {
     "프로젝트가 로드되었습니다. 작업을 시작할 수 있습니다.";
   populateFloorSelect();
   renderFloor();
+
+  resetHistory();
 }
 
 function populateCompassNodeSelects() {
@@ -726,6 +813,48 @@ window.addEventListener(
   { passive: false }
 );
 window.addEventListener("keydown", (e) => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  
+  // Ctrl+Z (또는 Cmd+Z)
+  if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault();
+    undo();
+    return;
+  }
+
+  // Ctrl+Y | redo
+  if ((e.ctrlKey || e.metaKey) &&
+      ((e.shiftKey && (e.key === "z" || e.key === "Z")) ||
+        e.key === "y" ||
+        e.key === "Y")) {
+    if (tag === "input" || tag === "textarea") return;
+    e.preventDefault();
+    redo();
+    return;
+  }
+
+  if (e.code === "Space") spaceHeld = true;
+  if (e.key === "Shift") state.keys.shift = true;
+
+  if (e.key === "Alt") {
+    state.keys.alt = true;
+    // ALT 눌르는 순간 스냅 가이드/점선 싹 지우기
+    state.snap.cand = { v: null, h: null };
+    state.snapGuide = null;
+    redrawOverlay();
+  }
+
+
+  // Delete / Backspace → 선택된 요소 삭제
+  if ((e.key === "Delete" || e.key === "Backspace") &&
+      !e.ctrlKey && !e.metaKey) {
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea") return; // 텍스트 삭제는 그대로 두기
+    e.preventDefault();
+    deleteCurrentSelection();
+  }
+
+  
   if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
     e.preventDefault();
   }
@@ -737,6 +866,22 @@ window.addEventListener("keydown", (e) => {
     redrawOverlay();
   }
 });
+
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") spaceHeld = false;
+  if (e.key === "Shift") {
+    state.keys.shift = false;
+    state.snapGuide = null;
+    redrawOverlay();
+  }
+  if (e.key === "Alt") {
+    state.keys.alt = false;
+    // 손 떼면 pointermove에서 다시 cand 계산 들어감
+  }
+});
+
+
+
 // 휠로 확대/축소 (Ctrl 불필요) – 마우스 기준 줌
 els.canvas.addEventListener(
   "wheel",
@@ -800,18 +945,6 @@ let spaceHeld = false;
 let draggingNodeId = null;
 let dragStart = null;
 let nodeStart = null;
-window.addEventListener("keydown", (e) => {
-  if (e.code === "Space") spaceHeld = true;
-  if (e.key === "Shift") state.keys.shift = true;
-});
-window.addEventListener("keyup", (e) => {
-  if (e.code === "Space") spaceHeld = false;
-  if (e.key === "Shift") {
-    state.keys.shift = false;
-    state.snapGuide = null;
-    redrawOverlay();
-  }
-});
 
 els.canvas.addEventListener("pointerdown", (e) => {
   if (spaceHeld || e.button === 1) {
@@ -1135,6 +1268,9 @@ function redrawOverlay() {
       if (state.tool !== "select") return;
       e.stopPropagation();
       e.preventDefault();
+
+      pushHistory();
+
       selectNode(n.id);
       const { x, y } = imagePointFromClient(e);
       draggingNodeId = n.id;
@@ -1154,7 +1290,7 @@ function redrawOverlay() {
       let py = state.mouse.y;
       let orient = null;
 
-      if (state.keys.shift) {
+      if (state.keys.shift && !state.keys.alt) {
         const dx = Math.abs(px - startNode.x);
         const dy = Math.abs(py - startNode.y);
         orient = dx >= dy ? "h" : "v";
@@ -1439,6 +1575,8 @@ function handleLinkPick(nodeId) {
       b: B.id,
     };
 
+    pushHistory();
+
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
     selectLink(newLink.id);
@@ -1599,6 +1737,54 @@ if (els.polyPts) {
   });
 }
 
+function deleteCurrentSelection() {
+  const sel = state.selection;
+  const g = state.graph;
+  if (!sel || !g) return;
+
+  pushHistory();
+
+  const { type, id } = sel;
+
+  if (type === "node") {
+    const nodes = g.nodes || [];
+    const idx = nodes.findIndex((n) => n.id === id);
+    if (idx === -1) return;
+
+    const nodeId = nodes[idx].id;
+
+    // 1) 노드 삭제
+    nodes.splice(idx, 1);
+
+    // 2) 이 노드를 참조하는 링크들 삭제
+    g.links = (g.links || []).filter(
+      (l) => l.a !== nodeId && l.b !== nodeId
+    );
+
+    // 3) 폴리곤에서 이 노드를 포함하고 있으면 제거
+    if (g.polygons) {
+      g.polygons = g.polygons
+        .map((p) => {
+          const nodesArr = p.nodes || [];
+          const newNodes = nodesArr.filter((nid) => nid !== nodeId);
+          return { ...p, nodes: newNodes };
+        })
+        // 노드가 3개 미만이 되면 폴리곤 자체를 삭제
+        .filter((p) => (p.nodes && p.nodes.length >= 3));
+    }
+  } else if (type === "link") {
+    g.links = (g.links || []).filter((l) => l.id !== id);
+  } else if (type === "polygon") {
+    g.polygons = (g.polygons || []).filter((p) => p.id !== id);
+  }
+
+  state.selection = null;
+
+  redrawOverlay?.();
+  updateLayersPanel?.();
+}
+
+
 function clearSelection() {
   state.selection = { type: null, id: null };
   els.selLbl.textContent = "👆 선택: 없음";
@@ -1641,7 +1827,7 @@ els.modalOk.addEventListener("click", async () => {
     const projectName = (els.projectName.value || "새 프로젝트").trim();
     const projectAuthor = (els.projectAuthor?.value || "").trim();
 
-    // 2) Instar 포맷 payload (최소 필드)
+    // 2) 포맷 payload (최소 필드)
     const payload = {
       meta: { projectName, projectAuthor },
       scale,
@@ -1799,29 +1985,8 @@ els.overlay.addEventListener("pointermove", (ev) => {
   const pt = imagePointFromClient(ev);
   state.mouse = { x: pt.x, y: pt.y };
 
-  // // 🔹 폴리곤 도구일 때: 진행 중인 폴리곤 드래프트의 "미리보기 점" 업데이트
-  // if (state.tool === "polygon" && state.polygonDraft) {
-  //   const tol = state.snap?.tol ?? 10;
-  //   const { v, h } = getAxisSnapCandidates(pt.x, pt.y, tol);
-
-  //   let x = pt.x;
-  //   let y = pt.y;
-
-  //   if (v && h) {
-  //     x = v.x;
-  //     y = h.y;
-  //   } else if (v) {
-  //     x = v.x;
-  //   } else if (h) {
-  //     y = h.y;
-  //   }
-
-  //   // 드래프트의 previewIdx 위치에 현재 마우스 위치 반영
-  //   state.polygonDraft.points[state.polygonDraft.previewIdx] = { x, y };
-  // }
-
   // 노드 도구일 때 스냅 후보 업데이트
-  if (state.tool === "node" && state.snap.active) {
+  if (state.tool === "node" && state.snap.active && !state.keys.alt) {
     state.snap.cand = getAxisSnapCandidates(pt.x, pt.y, state.snap.tol);
   } else {
     state.snap.cand = { v: null, h: null };
@@ -1838,7 +2003,7 @@ els.overlay.addEventListener("pointermove", (ev) => {
     let dy = pt.y - dragStart.y;
 
     // Shift 스냅: 수평/수직으로만
-    if (state.keys.shift) {
+    if (state.keys.shift && !state.keys.alt) {
       // 어떤 축으로 고정되는지 결정
       const orient = Math.abs(dx) >= Math.abs(dy) ? "h" : "v";
       if (orient === "h") dy = 0;
@@ -1857,17 +2022,8 @@ els.overlay.addEventListener("pointermove", (ev) => {
     // 드래그 중 아니더라도 링크 미리보기 위해 리프레시
     if (state.tool === "link") redrawOverlay();
   }
-
-  // 롱프레스 중이면 안내선만 보여준다 (스냅은 하지 않음)
-  // if (state.longPress.active && state.longPress.anchor) {
-  //   const dx = Math.abs(state.mouse.x - state.longPress.anchor.x);
-  //   const dy = Math.abs(state.mouse.y - state.longPress.anchor.y);
-  //   const orient = dx >= dy ? "h" : "v";
-  //   state.snapGuide = { anchor: state.longPress.anchor, orient };
-  // }
 });
 
-let lpStartClient = null;
 
 // node
 els.overlay.addEventListener(
@@ -1898,15 +2054,6 @@ els.overlay.addEventListener(
       y = h.y;
     }
 
-    // (옵션) Shift 직교 스냅 우선하려면 이 블록을 위로 올리기
-    if (state.keys.shift && state.graph.nodes.length) {
-      const last = state.graph.nodes[state.graph.nodes.length - 1];
-      const dx = Math.abs(x - last.x),
-        dy = Math.abs(y - last.y);
-      if (dx >= dy) y = last.y;
-      else x = last.x;
-    }
-
     const f = currentFloor();
     const newNode = {
       id: nextNodeId(),
@@ -1916,6 +2063,10 @@ els.overlay.addEventListener(
       floor: state.currentFloor,
       nseq: nextNodeSeq(f), // 층별 표기 번호
     };
+
+    // 실제로 그래프가 바뀌기 직전에 스냅샷
+    pushHistory();
+
     state.graph.nodes.push(newNode);
     selectNode(newNode.id);
     redrawOverlay();
@@ -1942,12 +2093,6 @@ els.overlay.addEventListener("pointerup", (ev) => {
 
 let lastNodeDownTs = 0;
 let suppressNextClick = false;
-
-function cancelLongPress() {
-  clearTimeout(state.longPress.timer);
-  state.longPress.timer = null;
-  state.longPress.active = false;
-}
 
 function addVertexToPolygonDraft(nodeId) {
   const n = getNodeById(nodeId);
@@ -1988,6 +2133,8 @@ function finalizePolygon() {
     nodes: [...d.nodes], // 이 폴리곤을 이루는 노드 id 리스트
   };
 
+  pushHistory();
+
   state.graph.polygons = state.graph.polygons || [];
   state.graph.polygons.push(newPoly);
 
@@ -2000,56 +2147,6 @@ els.overlay.addEventListener("dblclick", (ev) => {
   if (!state.polygonDraft) return;
   finalizePolygon();
   ev.preventDefault();
-});
-
-function endLongPressDeferred(e) {
-  // 롱프레스 상태가 아니면 무시
-  if (!state.longPress?.timer && !state.longPress?.active) return;
-
-  // 링크 도구일 때는 클릭 처리(노드 선택/연결)가 먼저 끝난 뒤에 종료
-  if (state.tool === "link") {
-    setTimeout(() => {
-      cancelLongPress(); // 타이머 클리어 + active=false
-      state.snapGuide = null; // 가이드 제거
-      redrawOverlay(); // 화면 갱신 (클릭 후에)
-    }, 0); // ← 클릭 이벤트보다 나중에 실행
-    return;
-  }
-
-  // 나머지 도구는 즉시 종료해도 OK
-  cancelLongPress();
-  state.snapGuide = null;
-  redrawOverlay();
-}
-els.overlay.addEventListener("pointerup", endLongPressDeferred, {
-  passive: true,
-});
-els.overlay.addEventListener("pointercancel", endLongPressDeferred, {
-  passive: true,
-});
-els.overlay.addEventListener("pointerleave", endLongPressDeferred, {
-  passive: true,
-});
-
-els.overlay.addEventListener("pointermove", (e) => {
-  // 이동이 임계값을 넘으면 롱프레스 취소(실수 방지)
-  if (state.longPress.timer && lpStartClient) {
-    const dx = Math.abs(e.clientX - lpStartClient.x);
-    const dy = Math.abs(e.clientY - lpStartClient.y);
-    if (dx > state.longPressMoveCancel || dy > state.longPressMoveCancel) {
-      cancelLongPress();
-    }
-  }
-
-  // 롱프레스 상태면 가이드만 갱신(스냅은 X)
-  if (state.longPress.active && state.longPress.anchor) {
-    const pt = imagePointFromClient(e);
-    const dx = Math.abs(pt.x - state.longPress.anchor.x);
-    const dy = Math.abs(pt.y - state.longPress.anchor.y);
-    const orient = dx >= dy ? "h" : "v";
-    state.snapGuide = { anchor: state.longPress.anchor, orient };
-    redrawOverlay();
-  }
 });
 
 // 배경 이미지 위 클릭으로만 편집 (이미지 없으면 무시)
@@ -2255,7 +2352,7 @@ async function saveProjectToDirectory() {
   }
 
   // 5) 그래프 JSON 생성 + images/meta/north_reference 포함
-  const json = serializeToInstarFormat();
+  const json = serializeToDataFormat();
   const meta = {
     floors: state.floors,
     startFloor: state.startFloor,
@@ -2290,7 +2387,7 @@ async function saveProjectToDirectory() {
 }
 
 // reformat the data
-function serializeToInstarFormat() {
+function serializeToDataFormat() {
   // 0) north_reference
   const from_node = state.northRef.from_node;
   const to_node = state.northRef.to_node;
@@ -2387,7 +2484,7 @@ async function openProjectFromDirectory() {
   const json = JSON.parse(await file.text());
 
   // 그래프/노드/azimuth 등 적용
-  applyFromInstarFormat(json);
+  applyFromDataFormat(json);
 
   // 이미지 복원
   const imgMap = json.images || {};
@@ -2434,7 +2531,7 @@ async function openProjectFromDirectory() {
   }/`;
 }
 
-function applyFromInstarFormat(json) {
+function applyFromDataFormat(json) {
   // scale
   if (typeof json.scale === "number") {
     state.scale = json.scale;
@@ -2652,8 +2749,8 @@ els.btnSave.addEventListener("click", async () => {
       return;
     }
 
-    // 에디터 상태 → Instar 포맷
-    const data = serializeToInstarFormat();
+    // 에디터 상태 → data 포맷
+    const data = serializeToDataFormat();
 
     // DB에 메타/스케일/시작층도 함께 보관
     data.meta = {
@@ -2688,7 +2785,7 @@ els.btnExport.addEventListener("click", async () => {
       await saveProjectToDirectory();
     } else {
       // 폴백: 기존 JSON만 저장 (폴더 미지원 브라우저)
-      const data = serializeToInstarFormat();
+      const data = serializeToDataFormat();
       const a = document.createElement("a");
       a.href = URL.createObjectURL(
         new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
@@ -2722,7 +2819,7 @@ els.btnOpen.addEventListener("click", async () => {
       });
       const f = await handle.getFile();
       const json = JSON.parse(await f.text());
-      applyFromInstarFormat(json);
+      applyFromDataFormat(json);
       els.status.textContent = "폴더 열기 미지원 → JSON만 열었습니다.";
     }
     activateProject();
@@ -2738,7 +2835,7 @@ els.btnOpen.addEventListener("click", async () => {
   if (pid) {
     const data = await apiGetProject(pid);
     state.projectId = data.id;
-    applyFromInstarFormat(data); // 복원 함수
+    applyFromDataFormat(data); // 복원 함수
 
     // 헤더 상태 갱신
     if (els.projName)

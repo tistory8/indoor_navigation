@@ -3,26 +3,29 @@ from django.utils.text import slugify
 from django.db import models
 
 class Project(models.Model):
+    # 프런트 payload(포맷)를 그대로 저장
+    """
+    CREATE TABLE `maps_project` (
+    `id` bigint NOT NULL AUTO_INCREMENT,
+    `name` varchar(255) NOT NULL,
+    `data` json NOT NULL,
+    `slug` varchar(150) NOT NULL,
+    `created_at` datetime(6) NOT NULL,
+    `updated_at` datetime(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `slug` (`slug`),
+    KEY `maps_project_name_9d345dd5` (`name`)
+    ) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """
+
     # 목록 조회/검색을 위해 name 별도 보관 (meta.projectName 미러링)
     name = models.CharField(max_length=255, db_index=True)
-    # 프런트 payload(Instar 포맷)를 그대로 저장
-    """
-    {
-        "meta": { "projectName": "test1", "projectAuthor": "" },
-        "scale": 0.33167,
-        "nodes": {},
-        "connections": {},
-        "special_points": {},
-        "north_reference": null,
-        "images": [null, null, null],
-        "startFloor": 1
-    }
-    """
     data = models.JSONField()
     slug = models.SlugField(max_length=150, unique=True, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+   
 
     def _make_unique_slug(self, base):
         s = slugify(base or "untitled")
@@ -62,6 +65,12 @@ class Project(models.Model):
         obj["id"] = self.id
         obj["slug"] = self.slug
         return obj
-
+    
+    class Meta:
+        ## for migrations
+        # managed = False
+        # db_table = "project"
+        pass
+        
     def __str__(self):
         return f"{self.id}: {self.name}"

@@ -32,9 +32,8 @@ def editor_page(request, slug: str):
 def ping(request):
     return JsonResponse({"ok": True})
 
-def _normalize_instar(payload: dict) -> dict:
-    """프론트(app.js)가 만드는 Instar 포맷을 그대로 존중하면서
-    최소 기본값만 보충."""
+def _normalize_data(payload: dict) -> dict:
+    """프론트(app.js)가 만드는 최소 기본값만 보충."""
     data = deepcopy(payload) if isinstance(payload, dict) else {}
 
     # meta
@@ -89,11 +88,11 @@ def _normalize_instar(payload: dict) -> dict:
 def projects(request):
     """
     GET  /api/projects/   -> [{id, name}]
-    POST /api/projects/   -> Instar JSON 생성 저장, {id, ...data} 반환
+    POST /api/projects/   -> JSON 생성 저장, {id, ...data} 반환
     """
     if request.method == "GET":
         out = []
-        for p in Project.objects.all().order_by("-updated_at"):
+        for p in Project.objects.all().order_by("updated_at"):
             thumb_url = ""
             if isinstance(p.data, dict):
                 images = p.data.get("images") or {}
@@ -121,7 +120,7 @@ def projects(request):
             payload = json.loads(request.body.decode("utf-8") or "{}")
         except Exception:
             payload = {}
-        data = _normalize_instar(payload)
+        data = _normalize_data(payload)
         name = (data.get("meta") or {}).get("projectName") or "새 프로젝트"
         obj = Project.objects.create(name=name, data=data)
         return JsonResponse(obj.to_response(), status=201)
@@ -157,7 +156,7 @@ def project_id(request, pid: int):
             merged.update(obj.data)
         if isinstance(payload, dict):
             merged.update(payload)
-        data = _normalize_instar(merged)
+        data = _normalize_data(merged)
         obj.data = data
         new_name = (data.get("meta") or {}).get("projectName") or obj.name
         # 이름 바뀌었으면 slug 재발급 되도록 비워둠(모델 save()에서 생성)
