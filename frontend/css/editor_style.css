@@ -1,13 +1,19 @@
+/* ========= 공통 색상/타이포 변수 ========= */
 :root {
-  --bg: #f5f6f8;
-  --panel: #fff;
-  --line: #e9ecef;
-  --muted: #6c757d;
-  --accent: #16243f;
+  --bg: #f5f6f8;      /* 전체 배경색 */
+  --panel: #fff;      /* 카드, 패널 배경색 */
+  --line: #e9ecef;    /* 경계선 색 */
+  --muted: #6c757d;   /* 보조 텍스트 색 */
+  --accent: #16243f;  /* 메인 포인트 색 */
 }
+
+/* 모든 요소 기본 box-sizing 설정 */
 * {
   box-sizing: border-box;
 }
+
+
+/* ========= body 기본 설정 ========= */
 body {
   margin: 0;
   background: var(--bg);
@@ -16,6 +22,8 @@ body {
   color: #222;
 }
 
+
+/* ========= 상단 토스트 메시지 ========= */
 .toast {
   position: fixed;
   top: 12px;
@@ -32,11 +40,14 @@ body {
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
+/* 토스트가 show 클래스일 때만 보이게 */
 .toast.show {
   opacity: 1;
   transform: translateX(-50%) translateY(4px);
 }
 
+
+/* ========= 상단 바, 툴바 공통 스타일 ========= */
 .topbar {
   height: 52px;
   display: flex;
@@ -49,6 +60,8 @@ body {
   top: 0;
   z-index: 5;
 }
+
+/* 두 번째 줄 툴바 */
 .toolbar {
   height: 52px;
   display: flex;
@@ -61,6 +74,8 @@ body {
   top: 0;
   z-index: 5;
 }
+
+/* 도구 버튼(👆, 🔵, 🔗 등) 기본 스타일 */
 .toolbtn {
   width: 3%;
   height: 38px;
@@ -69,12 +84,15 @@ body {
   background: #fff;
   cursor: pointer;
 }
+/* 현재 선택된 도구 버튼 상태 */
 .toolbtn.active {
   border-color: var(--accent);
   background: #eef4ff;
   color: var(--accent);
 }
 
+
+/* ========= 공통 버튼 스타일 ========= */
 .btn {
   height: 32px;
   padding: 0 10px;
@@ -83,52 +101,67 @@ body {
   border-radius: 8px;
   cursor: pointer;
 }
+/* 메인 액션 버튼(파란색) */
 .btn.primary {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
 }
+/* disabled 상태 버튼 */
 .btn[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+
+/* ========= 전체 레이아웃 (좌/중앙/우 3분할) ========= */
 .wrap {
   display: grid;
-  grid-template-columns: 320px 1fr 280px;
+  grid-template-columns: 320px 1fr 280px; /* 좌측 패널 / 중앙 캔버스 / 우측 패널 */
   gap: 12px;
   padding: 12px;
-  height: calc(100vh - 100px);
+  height: calc(100vh - 100px); /* 상단바 높이(대략)만큼 제외 */
 }
+
+/* 카드 공통 스타일 (좌·우 패널, 캔버스 등) */
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
 }
+/* 좌측 패널 공통 */
 .left,
 .right {
   padding: 12px;
-  overflow: auto;
+  overflow: auto; /* 내용이 넘칠 때 스크롤 */
 }
+
+/* 그룹 박스 (섹션) */
 .group {
   border: 1px solid var(--line);
   border-radius: 12px;
   margin-bottom: 12px;
 }
+/* 그룹 헤더 (타이틀) */
 .group > h3 {
   margin: 0;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   font-size: 14px;
 }
+/* 그룹 내부 컨텐츠 컨테이너 */
 .group .inner {
   padding: 10px 12px;
 }
 
-/* Layers panel */
+
+/* ========= 좌측 Layers 패널 ========= */
 #layersList {
   display: grid;
   gap: 6px;
 }
+
+/* 각 레이어 아이템(노드/링크/폴리곤 등 개별 요소 설명 줄) */
 .layer-item {
   display: flex;
   align-items: center;
@@ -141,33 +174,45 @@ body {
   cursor: pointer;
   user-select: none;
 }
+/* hover 시 살짝 강조 */
 .layer-item:hover {
   background: #f7f9ff;
   border-color: var(--accent);
 }
+/* 선택된 레이어 */
 .layer-item.active {
   background: #eef4ff;
   border-color: var(--accent);
   color: var(--accent);
 }
+/* 레이어 아이템 내 서브 텍스트 */
 .layer-item .meta {
   font-size: 12px;
   color: var(--muted);
 }
 
+
+/* ========= 폼 유틸리티 ========= */
+/* 세로로 간격 8px씩 쌓는 레이아웃 */
 .stack8 > * {
   margin-top: 8px;
 }
+
+/* row: label + input 한 줄 정렬 */
 .row {
   display: flex;
   gap: 8px;
   align-items: center;
 }
+
+/* row 안의 label 스타일 */
 .row > label {
   min-width: 64px;
   color: var(--muted);
   font-size: 12px;
 }
+
+/* select, input 공통 스타일 */
 select,
 input[type="number"],
 input[type="text"] {
@@ -179,10 +224,13 @@ input[type="text"] {
   flex: 1;
   width: 100%;
 }
+/* ========= 중앙 캔버스 영역 ========= */
 .center {
   position: relative;
   overflow: hidden;
 }
+
+/* 실제 캔버스 카드 (배경 회색 + 라운드) */
 #canvas {
   position: relative;
   height: 100%;
@@ -192,85 +240,116 @@ input[type="text"] {
   border: 1px solid var(--line);
   border-radius: 14px;
 }
+
+/* stage: 이미지 + SVG overlay를 통째로 감싸는 레이어 */
 #stage {
   position: absolute; /* 캔버스 기준으로 직접 위치/변환 */
   left: 0;
   top: 0;
   transform-origin: 0 0;
   will-change: transform;
-  touch-action: none; /* 터치 핀치/팬 커스텀 제스처용 */
+  touch-action: none; /* 터치 핀치/팬 제스처 직접 처리 */
   background-color: #fff;
 }
+
+/* 층 배경 이미지 */
 #bgImg {
   max-width: 100%;
   max-height: 100%;
-  display: none;
-  pointer-events: none;
+  display: none;             /* 로드 전에는 숨김 */
+  pointer-events: none;      /* 마우스 이벤트는 SVG가 받도록 */
   user-select: none;
   -webkit-user-drag: none;
   -webkit-user-select: none;
   -moz-user-select: none;
 }
+
+/* SVG overlay (노드/링크/폴리곤 등) */
 #overlay {
   position: absolute;
   left: 0;
   top: 0;
-  pointer-events: auto;
+  pointer-events: auto;      /* 이쪽에서 클릭 등 이벤트 처리 */
 }
 
+/* ========= 노드 / 링크 / 폴리곤 스타일 ========= */
+
+/* 선택된 노드를 강조 표시할 때 사용 (circle 요소 등) */
 .selected-node {
-  stroke: #007bff; /* 파란색 */
-  stroke-width: 3px; /* 테두리 두께 */
-  r: 7; /* 점 크기 (SVG circle일 경우) */
+  stroke: #007bff;  /* 파란 테두리 */
+  stroke-width: 3px;
+  r: 7;             /* circle일 경우 반지름 */
 }
+
+/* 기본 노드 점 스타일 */
 .node-dot {
   cursor: pointer;
 }
+
+/* 선택된 노드 점 */
 .node-dot.selected {
   stroke: #e11d48;
   stroke-width: 2;
 }
+
+/* 폴리곤 편집 시 활성 꼭짓점 강조 */
 .node-dot.poly-vertex-active {
-  stroke: #0cbd29;     /* 빨간 테두리 */
+  stroke: #0cbd29;
   stroke-width: 2.5px;
 }
+
+/* 링크 선 기본 스타일 */
 .link-line {
   stroke: #2563eb;
   stroke-width: 2;
 }
+
+/* 선택된 링크 선 */
 .link-line.selected {
   stroke: #e11d48;
   stroke-width: 3;
 }
+
+/* 폴리곤 채우기/테두리 기본 스타일 */
 .poly-fill {
   fill: var(--accent, #007aff);
   fill-opacity: 0.12;
   stroke: var(--accent, #007aff);
   stroke-width: 2;
 }
+
+/* 선택된 폴리곤: 빨간 배경으로 강조 */
 .poly-fill.selected {
-  fill: rgba(255, 8, 8, 1); /* 살짝 진한 빨간 배경 */
-  stroke: #dc2626;               /* 테두리도 빨강 */
+  fill: rgba(255, 8, 8, 1);  /* 진한 빨간 배경 */
+  stroke: #dc2626;           /* 빨간 테두리 */
   stroke-width: 2.2;
 }
 
+/* 폴리곤 그리는 중, 미리보기 선(점선) */
 .poly-preview {
   fill: none;
   stroke: #007aff;
   stroke-width: 2;
   stroke-dasharray: 6 6;
 }
+
+/* 폴리곤 꼭짓점 점 */
 .poly-vertex {
   fill: #fff;
   stroke: #007aff;
   stroke-width: 2;
 }
+
+/* 폴리곤 클릭 영역(hitbox) 확장용 */
 .poly-hit {
   fill: transparent;
   pointer-events: stroke;
   stroke-width: 20;
   stroke: transparent;
 }
+
+/* ========= 우측 속성 패널(노드/링크/폴리곤) ========= */
+
 .prop-group {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -287,6 +366,7 @@ input[type="text"] {
   font-weight: 600;
 }
 
+/* prop-group 내부 각 필드 블록 */
 .prop-group .field {
   padding: 8px 12px;
   display: flex;
@@ -295,26 +375,31 @@ input[type="text"] {
   border-top: 1px solid var(--line);
 }
 
+/* 첫 번째 필드는 윗줄(border-top) 제거 */
 .prop-group .field:first-of-type {
   border-top: none;
 }
 
+/* 필드 라벨 */
 .prop-group .field > label {
   font-size: 12px;
   color: var(--muted);
 }
 
+/* 인풋 전체 폭 */
 .prop-group .input-block {
   width: 100%;
 }
 
-/* 꼭짓점 리스트 정렬 */
+/* ========= 폴리곤 꼭짓점 리스트(테이블 비슷한 UI) ========= */
+
 .poly-vertices {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
+/* 각 꼭짓점 행: P1, X, Y, 노드명 */
 .poly-vertex-row {
   display: grid;
   grid-template-columns: 26px 1fr 1fr auto;
@@ -322,15 +407,18 @@ input[type="text"] {
   align-items: center;
 }
 
+/* P1, P2 같은 라벨 */
 .poly-vertex-row .pv-label {
   font-size: 12px;
   color: var(--muted);
 }
 
+/* 좌표 입력 인풋 */
 .poly-vertex-row .coord-input {
   width: 100%;
 }
 
+/* 노드 이름 텍스트 */
 .poly-vertex-row .pv-node {
   min-width: 80px;
   text-align: right;
@@ -339,12 +427,16 @@ input[type="text"] {
   font-weight: 500;
 }
 
+/* ========= 빈 상태 안내(처음 진입 시) ========= */
+
 .empty {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
 }
+
+/* 말풍선 스타일 */
 .empty .bubble {
   background: #e3e3e3;
   border: 1px dashed var(--line);
@@ -352,6 +444,9 @@ input[type="text"] {
   padding: 22px 28px;
   color: #000;
 }
+
+/* ========= 우측 하단 상태바 ========= */
+
 .statusbar {
   position: absolute;
   right: 12px;
@@ -363,16 +458,21 @@ input[type="text"] {
   border-radius: 8px;
   padding: 4px 8px;
 }
-/* modal */
+
+/* ========= 모달(새 프로젝트 생성 등) ========= */
+
+/* 모달 뒷배경 (반투명 오버레이) */
 .modal-back {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.4);
-  display: none;
+  display: none; /* 필요할 때 flex로 바꿔서 중앙 정렬 */
   align-items: center;
   justify-content: center;
   z-index: 10;
 }
+
+/* 모달 박스 본체 */
 .modal {
   width: min(900px, 96vw);
   height: min(600px, 90vh);
@@ -382,6 +482,8 @@ input[type="text"] {
   border: 1px solid var(--line);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
 }
+
+/* 모달 헤더 (타이틀 + 닫기 버튼) */
 .modal header {
   padding: 14px 16px;
   border-bottom: 1px solid var(--line);
@@ -389,15 +491,21 @@ input[type="text"] {
   justify-content: space-between;
   align-items: center;
 }
+
+/* 모달 본문 영역 */
 .modal .body {
   padding: 14px 16px;
 }
+
+/* 새 프로젝트 모달에서 층별 설정 그리드 */
 .floor-grid {
   display: grid;
   grid-template-columns: 80px 1fr auto auto;
   gap: 8px;
   align-items: center;
 }
+
+/* pill 스타일(작은 뱃지 느낌) */
 .pill {
   font-size: 12px;
   padding: 2px 8px;
@@ -406,20 +514,29 @@ input[type="text"] {
   color: #555;
   background: #fafafa;
 }
+
+/* 보조 텍스트 */
 .muted {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* 화면에서 숨기고 싶을 때 공통으로 쓰는 클래스 */
 .hidden {
   display: none;
 }
 
+/* ========= 링크/스냅 가이드용 데코레이션 ========= */
+
+/* 마우스 이동 중 미리보기 선 (링크 연결 등) */
 .preview-line {
   stroke: var(--accent);
   stroke-width: 2;
   stroke-dasharray: 6 4;
   pointer-events: none;
 }
+
+/* 스냅용 가이드 라인 (점선) */
 .guide-line {
   stroke: var(--accent);
   stroke-opacity: 0.55;
@@ -427,6 +544,8 @@ input[type="text"] {
   stroke-dasharray: 4 4;
   pointer-events: none;
 }
+
+/* 앵커 원형 가이드 */
 .anchor-ring {
   fill: none;
   stroke: var(--accent);
@@ -434,6 +553,8 @@ input[type="text"] {
   stroke-dasharray: 2 2;
   pointer-events: none;
 }
+
+/* 디버그/장식/상태바는 마우스 이벤트 막기 */
 .snap-debug,
 .decor,
 .statusbar {

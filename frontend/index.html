@@ -1,16 +1,37 @@
 <!doctype html>
 <html lang="ko">
 <head>
+  <!-- 기본 인코딩 및 문서 정보 -->
   <meta charset="utf-8" />
+  <!-- 브라우저 탭에 표시될 제목 -->
   <title>My projects</title>
+  <!-- 프로젝트 목록 전용 스타일 시트 -->
   <link rel="stylesheet" href="./css/index_style.css" />
 </head>
+
+<!-- 프로젝트 목록 페이지 전체에 page-projects 스타일 적용 -->
 <body class="page-projects">
+  <!-- 상단 고정 바: 제목 + 새 프로젝트 버튼 + 검색/정렬 영역 -->
   <header class="topbar">
+    <!-- 좌측 제목: 단순 타이틀, 기능 없음 -->
     <h1>My projects</h1>
+
+    <!-- 우측 액션 영역: 새 프로젝트, 검색, 정렬 -->
     <div class="actions">
+      <!-- 새 프로젝트 생성 버튼
+           - projects.js에서 클릭 이벤트를 잡아서
+             Django 백엔드에 새 프로젝트를 만들고
+             에디터 페이지로 이동시키는 용도로 사용 -->
       <button id="btnNew" class="btn primary">+ New project</button>
+
+      <!-- 전체 프로젝트 검색 인풋
+           - 제목 / 작성자 등 텍스트 기반 검색용
+           - 입력 이벤트를 projects.js에서 감지해서 필터링 -->
       <input id="txtSearch" placeholder="Search all projects" />
+
+      <!-- 정렬 기준 선택 셀렉트박스
+           - value에 따라 날짜/이름 기준 오름/내림차순 정렬
+           - 변경 이벤트를 projects.js에서 처리 -->
       <select id="selSort">
         <option value="date_desc">Date descending</option>
         <option value="date_asc">Date ascending</option>
@@ -20,8 +41,15 @@
     </div>
   </header>
 
+  <!-- 실제 프로젝트 카드들이 렌더링될 컨테이너
+       - projects.js에서 API(/maps/projects/)로 목록을 받아와
+         이 안에 카드 DOM을 동적으로 생성 -->
   <main class="proj-grid" id="grid"></main>
 
+  <!-- 목록 화면용 JS 엔트리 포인트
+       - type="module"이라 ES 모듈 문법 사용
+       - 프로젝트 불러오기/검색/정렬/클릭 시 에디터 이동 등의
+         클라이언트 로직이 들어 있음 -->
   <script type="module" src="./js/projects.js"></script>
 </body>
 </html>

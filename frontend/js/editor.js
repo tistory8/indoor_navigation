@@ -1,3 +1,42 @@
+/**
+ * editor.js
+ * ---------------------------------------------------------------------------
+ * 실내 지도 에디터 메인 스크립트.
+ *
+ * 담당하는 역할:
+ * 1) 상태(state) 관리
+ *    - graph: nodes / links / polygons / north_reference
+ *    - view : 캔버스 줌/팬 (scale, tx, ty)
+ *    - tool : 현재 활성 도구 (select / node / link / polygon / compass 등)
+ *    - selection: 선택된 노드/링크/폴리곤
+ *    - history : Undo/Redo 스택
+ *
+ * 2) 그래프 조작 함수
+ *    - 노드/링크/폴리곤 생성, 수정, 삭제
+ *    - 층(floor)별 필터링, 시퀀스 번호 관리
+ *
+ * 3) 렌더링
+ *    - SVG overlay에 노드/링크/폴리곤 그리기
+ *    - 선택 상태 강조, 스냅 가이드 라인, 폴리곤 프리뷰 등
+ *
+ * 4) 도구별 로직
+ *    - select 도구: 클릭/드래그로 선택/이동
+ *    - node 도구  : 클릭 위치에 노드 생성
+ *    - link 도구  : 노드 둘을 연결하는 링크 생성
+ *    - polygon    : 네 개의 점을 찍어서 폴리곤 생성/편집
+ *    - compass    : 두 노드 + 방위각(azimuth)을 입력/저장
+ *
+ * 5) 이벤트 핸들러
+ *    - pointerdown / pointermove / pointerup
+ *    - wheel 줌, 키보드 단축키(Ctrl+Z/Y, Delete 등)
+ *
+ * 6) 초기화
+ *    - DOM 요소 캐시
+ *    - URL 쿼리(?project=) 파싱 후 /api 에서 프로젝트 로드
+ *    - 층 셀렉트, 속성 패널 초기화
+ * ---------------------------------------------------------------------------
+ */
+
 import {
   apiGetProject,
   apiUpdateProject,
@@ -6,7 +45,15 @@ import {
   API_ORIGIN,
 } from "./api.js";
 
-// === ID counters ============================================================
+/**
+ * ID counters
+ * ---------------------------------------------------------------------------
+ * 노드/링크/폴리곤 등을 생성할 때
+ * - "N_1", "N_2" ...
+ * - "lk_1", "lk_2" ...
+ * - "pg_1", "pg_2" ...
+ * 같은 패턴으로 고유 ID를 만들어 주기 위한 카운터.
+ */
 let counters = {
   node: 1,
   link: 1,
@@ -15,18 +62,38 @@ let counters = {
   rect: 1,
 };
 
+/**
+ * 현재 활성 도구를 변경한다.
+ * - toolbar 버튼 active 상태 갱신
+ * - 선택 상태/임시 상태를 초기화할 수도 있음
+ */
 function resetCounters() {
   counters = { node: 1, link: 1, arrow: 1, polygon: 1, rect: 1 };
 }
 
+// 신규 노드 ID 생성: "N_1", "N_2", ...
 function nextNodeId() {
   return `N_${counters.node++}`;
 }
+// 신규 링크 ID 생성: "lk_1", "lk_2", ...
 function nextLinkId() {
   return `lk_${counters.link++}`;
 }
+// 신규 폴리곤 ID 생성: "pg_1", "pg_2", ...
+function nextPolyId() {
+  return `pg_${counters.polygon++}`;
+}
 
-// 현재 로드된 데이터에서 시퀀스 재설정
+
+/**
+ * 현재 로드된 데이터(json)를 보고
+ *  - node: N_x 중 가장 큰 번호 + 1
+ *  - link: lk_x 중 가장 큰 번호 + 1
+ * 로 counters를 맞춰준다.
+ *
+ * 즉, 기존 프로젝트 불러왔을 때
+ * "이미 있는 ID 이후부터" 이어서 번호가 매겨지게 하는 역할.
+ */
 function setCountersFromData(json) {
   // nodes: { "n_3": {...}, "n_10": {...} } 또는 배열일 수도 있다면 보완
   const nodeIds = Array.isArray(json?.nodes)
@@ -45,109 +112,192 @@ function setCountersFromData(json) {
     return Math.max(m, mtx ? parseInt(mtx[1], 10) : 0);
   }, 0);
   counters.link = (maxLink || 0) + 1;
-
-  // 필요 시 arrow/polygon/rect도 같은 방식으로
 }
 
 // --------------------------------------
 // ------------ App State ---------------
+// 전체 에디터 상태를 한 곳에 모아두는 객체
+// --------------------------------------
 const state = {
+  // 백엔드 Project PK
   projectId: null,
-  modified: false,
 
-  loaded: false,
+  // 메타 정보
   projectName: "새 프로젝트",
   projectAuthor: "",
-  floors: 4,
-  startFloor: 0,
-  scale: 0.33167,
-  images: [], // { floorIndex: ObjectURL }
-  currentFloor: 0,
-  imageLocked: true,
 
-  graph: { nodes: [], links: [], polygons: [] },
-  view: { scale: 1, tx: 0, ty: 0 },
+  // "저장되지 않은 변경사항 있음" 플래그
+  modified: false,
+
+  // 프로젝트가 한 번이라도 로드/생성 되었는지 여부
+  loaded: false,
+
+  // 층 정보
+  floors: 4,        // 총 층 수
+  startFloor: 0,    // 시작 층 index (0-based, 예: 0=1층)
+  scale: 0.33167,   // m/pixel 스케일
+  images: [],       // 층별 배경 이미지 URL/경로 목록 (floorIndex -> url)
+  currentFloor: 0,  // 현재 층 index (0-based)
+  imageLocked: true, // 배경 이미지 잠금 여부
+
+  // 그래프 데이터 (실제 저장 포맷과 동일한 구조 유지)
+  graph: {
+    nodes: [],             // [{id, name, x, y, floor, ...}, ...]
+    links: [],             // [{id, a, b, floor, ...}, ...]
+    polygons: [],          // [{id, floor, p1:{x,y}, ...}, ...]
+    north_reference: null, // {from_node, to_node, azimuth}
+  },
+
+  // 뷰(카메라) 변환 정보 (줌/팬)
+  view: {
+    scale: 1,              // 확대/축소 배율
+    tx: 0,                 // x 방향 평행이동
+    ty: 0,                 // y 방향 평행이동
+  },
+
+  // 현재 선택된 도구 (select/node/link/polygon/compass 등)
   tool: "select",
+
+  // 현재 선택 상태
   selection: { type: null, id: null },
 
+  // 스냅(격자/가이드라인) 상태
   snap: {
-    active: true,
-    tol: 10, // 스냅 허용 픽셀
+    active: true,           // 스냅 ON/OFF
+    tol: 10,                // 허용 거리(px)
     cand: { v: null, h: null }, // { v:{x,ax,ay,dx}, h:{y,ax,ay,dy} }
   },
-  compass: { picking: null, tempA: null, tempB: null },
 
-  // 층별 표시용 시퀀스 (노드/링크)
+  // 나침반(방위) 설정 도구용 임시 상태
+  compass: {
+    picking: null,         // "from" 선택 중 / "to" 선택 중 여부
+    tempA: null,           // 선택된 from 노드 ID
+    tempB: null,           // 선택된 to 노드 ID
+  },
+
+  // 층별 시퀀스 번호 (노드/링크/폴리곤 nseq, lseq, pseq 관리)
   seq: {
-    node: {}, // floor(int) -> max nseq
-    link: {}, // floor(int) -> max lseq
-    polygon: {},
+    node: {},   // floor -> max nseq
+    link: {},   // floor -> max lseq
+    polygon: {},// floor -> max pseq
   },
 };
+
+// 마우스 화면 좌표 저장용
 state.mouse = { x: 0, y: 0 };
 
-// === Undo/Redo history ===
+// === Undo/Redo history ======================================================
+// - stack: 편집 스냅샷 배열
+// - index: 현재 위치 (0-based)
+// - max  : 최대 기록 개수
 state.history = {
   stack: [],
   index: -1,
   max: 50, // 최대 50단계까지 기억
 };
 
+/**
+ * 현재 state에서 Undo/Redo용 스냅샷을 하나 만든다.
+ * - graph 전체
+ * - currentFloor
+ * - selection
+ * 을 복사해서 돌려준다.
+ */
 function makeSnapshot() {
   return {
+    // graph는 깊은 복사 (JSON 직렬화/역직렬화)
     graph: state.graph
       ? JSON.parse(JSON.stringify(state.graph))
       : { nodes: [], links: [], polygons: [] },
+    
+    // 현재 층 index
     currentFloor: state.currentFloor,
+
+    // 선택 상태는 얕은 복사
     selection: state.selection ? { ...state.selection } : null,
   };
 }
 
+/**
+ * 히스토리 스냅샷을 실제 state에 적용한다.
+ * - Undo/Redo에서 호출
+ */
 function applySnapshot(snap) {
   if (!snap) return;
 
+  // graph 교체 (deep copy)
   state.graph = snap.graph
     ? JSON.parse(JSON.stringify(snap.graph))
     : { nodes: [], links: [], polygons: [] };
 
+  // 층
   state.currentFloor =
     typeof snap.currentFloor === "number"
       ? snap.currentFloor
       : state.currentFloor;
 
+  // 선택 상태
   state.selection = snap.selection ? { ...snap.selection } : null;
 
+  // 층 셀렉트 박스 값도 같이 맞춰준다.
   if (els.floorSelect) {
     els.floorSelect.value = String(state.currentFloor);
   }
 
+  // 현재 층/그래프에 맞게 화면 다시 그리기
   renderFloor?.();
   redrawOverlay?.();
   updateLayersPanel?.();
 }
 
+
+/**
+ * 현재 편집 상태를 직렬화해서 문자열로 만든다.
+ * - 포맷 serializeToDataFormat() 기준으로 비교
+ * - 이 문자열을 기준으로 "저장된 시점과 다른가" 판별
+ */
 function snapshotCurrent() {
   try {
-    // Instar 포맷 기준으로 비교하면, meta/azimuth 등도 같이 감지 가능
+    // 포맷 기준으로 비교하면, meta/azimuth 등도 같이 감지 가능
     return JSON.stringify(serializeToDataFormat());
   } catch {
+    // 직렬화 에러 시에는 null 반환
     return null;
   }
 }
 
+/**
+ * "현재 상태"를 기준으로
+ *  - 마지막 저장 스냅샷(_savedSnapshot)
+ *  - modified 플래그
+ * 를 초기화
+ * (저장 직후 / 프로젝트 로드 직후에 호출)
+ */
 function updateSavedSnapshot() {
   state._savedSnapshot = snapshotCurrent();
   state.modified = false;
 }
 
+/**
+ * 저장 이후에 변경사항이 있는지 여부
+ * - 직렬화 문자열이 다르면 변경된 것으로 판단
+ */
 function hasUnsavedChanges() {
   if (!state._savedSnapshot) return false;
   const cur = snapshotCurrent();
   return cur !== state._savedSnapshot;
 }
 
+/**
+ * 히스토리 스택 초기화
+ * - 새 프로젝트를 열었거나, 프로젝트를 처음 로드한 직후에
+ *   현재 상태 한 번만 스냅샷으로 저장
+ */
 function resetHistory() {
+  // history 스택 비우고 최대 개수 100으로 재설정
   state.history = { stack: [], index: -1, max: 100 };
+
+  // 현재 상태 기준 스냅샷
   const snap = makeSnapshot(); // 현재 상태 (로드 직후)
   state.history.stack.push(snap);
   state.history.index = 0;
@@ -157,6 +307,14 @@ function resetHistory() {
   state.modified = false;
 }
 
+/**
+ * 편집 작업이 발생할 때마다 호출해서
+ * 현재 상태를 히스토리에 push.
+ *
+ * - Undo 이후에 새로운 작업이 오면
+ *   → 현재 index 뒤쪽(redo 후보)을 잘라낸다.
+ * - 최대 개수 초과 시 가장 오래된 스냅샷 제거.
+ */
 function pushHistory() {
   const h = state.history;
   const snap = makeSnapshot();
@@ -166,6 +324,7 @@ function pushHistory() {
     h.stack.splice(h.index + 1);
   }
 
+  // 현재 상태 스냅샷 추가
   h.stack.push(snap);
 
   // 최대 개수 초과 시 앞에서 하나 제거
@@ -173,9 +332,16 @@ function pushHistory() {
     h.stack.shift();
   }
 
+  // 항상 마지막(=가장 최신) 위치를 가리키게 index 갱신
   h.index = h.stack.length - 1;
 }
 
+
+/**
+ * Undo(되돌리기)
+ * - history.index를 1 감소시키고
+ * - 해당 스냅샷을 state에 적용
+ */
 function undo() {
   const h = state.history;
   if (h.index <= 0) return;
@@ -185,6 +351,11 @@ function undo() {
   applySnapshot(snap);
 }
 
+/**
+ * Redo(다시 실행)
+ * - history.index를 1 증가시키고
+ * - 해당 스냅샷을 state에 적용
+ */
 function redo() {
   const h = state.history;
   if (h.index < 0 || h.index >= h.stack.length - 1) return;
@@ -194,33 +365,50 @@ function redo() {
   applySnapshot(snap);
 }
 
-// snapshot
-state.keys = { shift: false, alt: false }; // Alt까지 같이 쓰고 싶으면 여기서 정의
+// 키보드 상태 기록 (shift, alt 등)
+// - 드래그 스냅/다중선택 등에서 활용
+state.keys = { shift: false, alt: false };
+
+// 현재 화면에 표시 중인 스냅 가이드 정보
 state.snapGuide = null;
 
-// save
+// 나침반(정북 방향) 기준 정보
+// - from_node, to_node: 기준이 되는 두 노드
+// - azimuth: 실제 방위각 (0~360, 북=0)
 state.northRef = state.northRef || {
   from_node: null,
   to_node: null,
   azimuth: 0,
 };
 
-// ------- Elements -------
+
+/**
+ * els: 자주 쓰는 DOM 요소들을 한 번에 캐시해두는 객체
+ * - 매번 document.getElementById() 하지 않고
+ *   els.xxx 로 재사용하기 위해 모아둔 것
+ */
 const els = {
+  // 상단 버튼들
   btnNew: document.getElementById("btnNew"),
   btnOpen: document.getElementById("btnOpen"),
   btnSave: document.getElementById("btnSave"),
   btnExport: document.getElementById("btnExport"),
+
+  // 층 / 배경 이미지 관련
   floorSelect: document.getElementById("floorSelect"),
   btnLoadBg: document.getElementById("btnLoadBg"),
   btnClearBg: document.getElementById("btnClearBg"),
   btnLock: document.getElementById("btnLock"),
   bgName: document.getElementById("bgName"),
+
+  // 캔버스 / 스테이지 / 배경 이미지 / 빈 상태 / 상태바
   canvas: document.getElementById("canvas"),
   stage: document.getElementById("stage"),
   bgImg: document.getElementById("bgImg"),
   empty: document.getElementById("emptyState"),
   status: document.getElementById("status"),
+
+  // 우측 프로젝트 정보 영역
   projName: document.getElementById("projName"),
   projAuthor: document.getElementById("projAuthor"),
   projState: document.getElementById("projState"),
@@ -229,9 +417,10 @@ const els = {
   layerInfo: document.getElementById("layerInfo"),
   totalInfo: document.getElementById("totalInfo"),
 
+  // 토스트 메시지
   toast: document.getElementById("toast"),
 
-  // modal
+  // 새 프로젝트 모달
   modalBack: document.getElementById("newModalBack"),
   closeModal: document.getElementById("closeModal"),
   projectName: document.getElementById("projectName"),
@@ -242,12 +431,16 @@ const els = {
   floorFiles: document.getElementById("floorFiles"),
   modalOk: document.getElementById("btnModalOk"),
   modalReset: document.getElementById("btnModalReset"),
+
+  // 시작점 설정 (속성 패널)
   startX: document.getElementById("startX"),
   startY: document.getElementById("startY"),
   btnPickStart: document.getElementById("btnPickStart"),
+
+  // SVG overlay 루트
   overlay: document.getElementById("overlay"),
 
-  // node props
+  // 노드 속성 패널 요소
   nodeGroup: document.getElementById("nodeGroup"),
   nodeId: document.getElementById("nodeId"),
   nodeName: document.getElementById("nodeName"),
@@ -255,13 +448,13 @@ const els = {
   nodeY: document.getElementById("nodeY"),
   nodeType: document.getElementById("nodeType"),
 
-  // link props
+  // 링크 속성 패널 요소
   linkGroup: document.getElementById("linkGroup"),
   linkId: document.getElementById("linkId"),
   linkFrom: document.getElementById("linkFrom"),
   linkTo: document.getElementById("linkTo"),
 
-  // polygon props
+  // 폴리곤 속성 패널 요소
   polyGroup: document.getElementById("polyGroup"),
   polyId: document.getElementById("polyId"),
   polyName: document.getElementById("polyName"),
@@ -288,7 +481,7 @@ const els = {
     },
   ],
 
-  // compass props
+  // 방위(나침반) 속성 패널 요소
   compassPanel: document.getElementById("compassPanel"),
   compassFrom: document.getElementById("compassFrom"),
   compassTo: document.getElementById("compassTo"),
@@ -298,10 +491,21 @@ const els = {
   compassInfo: document.getElementById("compassInfo"),
 };
 
+
+
 // ---------------------------------------
 // ------------- Helpers -----------------
+// ---------------------------------------
+
+/**
+ * 에디터 전체 enable/disable
+ * - 프로젝트가 아직 로드되지 않았을 때는 대부분의 컨트롤을 막아둔다.
+ */
 function setEnabled(enabled) {
+  // 툴 버튼들 활성/비활성
   document.querySelectorAll(".toolbtn").forEach((b) => (b.disabled = !enabled));
+
+  // 층/배경 관련 입력들
   [
     els.floorSelect,
     els.btnLoadBg,
@@ -313,6 +517,8 @@ function setEnabled(enabled) {
   ].forEach((e) => {
     if (e) e.disabled = !enabled;
   });
+
+  // 저장/내보내기 버튼
   els.btnSave.disabled = !enabled;
   els.btnExport.disabled = !enabled;
 
@@ -320,7 +526,15 @@ function setEnabled(enabled) {
   els.btnOpen.disabled = false;
 }
 
+// 토스트 자동 숨김 타이머 핸들
 let toastTimer = null;
+
+
+/**
+ * 상단 토스트 메시지 보여주기
+ * - msg: 표시할 텍스트 (기본: "저장되었습니다.")
+ * - 1.8초 후 자동으로 사라진다.
+ */
 function showToast(msg = "저장되었습니다.") {
   if (!els.toast) return;
   els.toast.textContent = msg;
@@ -331,103 +545,200 @@ function showToast(msg = "저장되었습니다.") {
   }, 1800);
 }
 
+
+/**
+ * 새 프로젝트 설정 모달 열기
+ */
 function openModal() {
   els.modalBack.style.display = "flex";
-  // seed selects
+
+  // 층 수 입력 값 기준으로 "시작 층" 옵션 채우기
   buildStartFloorOptions(parseInt(els.floorCount.value || "1", 10));
+
+  // 층별 배경 이미지 업로드 행들 렌더링
   buildFloorFileRows();
 }
+
+/** 새 프로젝트 모달 닫기 */
 function closeModal() {
   els.modalBack.style.display = "none";
 }
+
+
+
+/**
+ * 새 프로젝트 모달 안의 "시작 층" 셀렉트 박스를
+ * 층 수(n)에 맞게 1층~n층 옵션으로 채워준다.
+ */
 function buildStartFloorOptions(n) {
+  // 기존 옵션 비우기
   els.startFloor.innerHTML = "";
+
+  // 0-based index, 화면에는 "1층", "2층" 식으로 표시
   for (let i = 0; i < n; i++) {
     const o = document.createElement("option");
-    o.value = i;
+    o.value = i;             // 실제 값은 index (0,1,2,...)
     o.textContent = i + 1 + "층";
     els.startFloor.appendChild(o);
   }
 }
+
+
+/**
+ * 새 프로젝트 모달 안의 "층별 도면 이미지 업로드" 행들을 만든다.
+ *
+ * - floorCount 입력 박스의 값(n)을 읽어서
+ *   n층까지 반복하며 아래 구조의 DOM을 만든다:
+ *   [ 층라벨 | 파일 이름 pill | 선택 버튼 | 제거 버튼 | 숨겨진 file input ]
+ */
 function buildFloorFileRows() {
   const n = parseInt(els.floorCount.value || "1", 10);
+
+  // 이전 행들 제거
   els.floorFiles.innerHTML = "";
+
   for (let i = 0; i < n; i++) {
     const row = document.createElement("div");
     row.className = "floor-grid";
+
+    // "1층", "2층" 라벨
     const label = document.createElement("div");
     label.textContent = i + 1 + "층";
+
+    // 파일 이름 표시 pill
     const name = document.createElement("div");
     name.id = "fileName_" + i;
     name.className = "pill";
     name.textContent = "이미지 없음";
+
+    // "선택" 버튼 (file input 클릭을 대신해줌)
     const sel = document.createElement("button");
     sel.className = "btn";
     sel.textContent = "선택";
+
+    // "제거" 버튼 (선택된 이미지 해제)
     const rem = document.createElement("button");
     rem.className = "btn";
     rem.textContent = "제거";
+
+    // 실제 파일 입력 (숨겨둔다)
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    input.className = "floor-file hidden";
-    input.dataset.floor = String(i);
+    input.className = "floor-file hidden"; // CSS로 display:none 비슷하게 처리
+    input.dataset.floor = String(i);       // 어떤 층의 파일인지 표시
 
+    // "선택" 버튼 → 파일 선택 다이얼로그 열기
     sel.onclick = () => {
       input.click();
     };
+
+    // 파일이 선택되면
     input.onchange = () => {
       if (input.files[0]) {
+        // 브라우저 메모리 상 가짜 URL 생성 (미리보기용)
         const url = URL.createObjectURL(input.files[0]);
+
+        // state.images에 현재 층 인덱스로 저장
         state.images[i] = url;
+
+        // 파일 이름 pill 업데이트
         name.textContent = input.files[0].name;
+
+        // 이미 프로젝트가 로드된 상태이고,
+        // 현재 보고 있는 층이면 바로 배경도 새로 그려줌
         if (state.loaded && state.currentFloor === i) renderFloor();
       }
     };
+
+    // "제거" 버튼 → 해당 층 배경 이미지 제거
     rem.onclick = () => {
       if (state.images[i]) {
+        // object URL 회수 (메모리 누수 방지)
         URL.revokeObjectURL(state.images[i]);
         delete state.images[i];
         name.textContent = "이미지 없음";
-        if (state.loaded && state.currentFloor === i) renderFloor();
+
+        // 현재 층이었다면 배경 다시 렌더링
+        if (state.loaded && state.currentFloor === i) {
+          renderFloor();
+        }
       }
     };
+
+    // 한 줄(row)에 순서대로 붙이기
     row.append(label, name, sel, rem, input);
     els.floorFiles.appendChild(row);
   }
 }
+
+
+/**
+ * 현재 층에 맞는 배경 이미지를 <img id="bgImg">에 세팅하고
+ * - 오른쪽 UI의 층 라벨/배경 이름 라벨도 같이 갱신한다.
+ */
 function renderFloor() {
   const f = currentFloor();
   const url = state.images?.[f] || "";
 
   if (url) {
+    // 배경 이미지 표시
     els.bgImg.src = url;
     els.bgImg.style.display = "block";
+
+    // 모달에서 해당 층 파일 이름 pill을 찾아와서 표시
     els.bgName.textContent =
       els.floorFiles.querySelector("#fileName_" + state.currentFloor)
         ?.textContent || "이미지";
   } else {
+    // 배경 이미지 없음
     els.bgImg.removeAttribute("src");
     els.bgImg.style.display = "none";
     els.bgName.textContent = "이미지 없음";
   }
+
+  // 상단 층 라벨 (🏢 층: 1, 2, ...)
   els.floorLbl.textContent = "🏢 층: " + (state.currentFloor + 1);
+
+  // 선택 라벨 초기화
   els.selLbl.textContent = " ";
 }
+
+
+/**
+ * 현재 층 인덱스 반환 (0-based)
+ * - 기존에 쓰던 state.currentfloor(소문자 f)와의 호환도 고려
+ */
 function currentFloor() {
   // (레거시 호환) state.currentfloor 사용 중이면 그 값을 우선
   return Number(state.currentFloor ?? state.currentfloor ?? 0);
 }
+
+/**
+ * 노드 ID로 노드 객체 찾기
+ */
 function getNodeById(id) {
   const sid = String(id);
   return (state.graph?.nodes || []).find((n) => String(n.id) === sid) || null;
 }
+
+/**
+ * 특정 층(floor)에 속한 노드 목록만 필터링
+ */
 function nodesOnFloor(f) {
   return (state.graph.nodes || []).filter((n) => (n.floor ?? 0) === f);
 }
+
+/**
+ * 특정 층(floor)에 속한 링크 목록만 필터링
+ */
 function linksOnFloor(f) {
   return (state.graph.links || []).filter((l) => (l.floor ?? 0) === f);
 }
+
+/**
+ * 특정 층(floor)에 속한 폴리곤 목록만 필터링
+ */
 function polysOnFloor(f) {
   return (state.graph.polygons || []).filter(
     (p) => Number(p.floor ?? 0) === Number(f)
@@ -452,7 +763,14 @@ function nextPolySeq(floor) {
   return state.seq.polygon[floor];
 }
 
-// 사용자 입력 name이 있으면 그걸, 없으면 층별 번호 nseq, 그래도 없으면 id
+
+/**
+ * 노드 라벨 문자열 만들기
+ * - 우선순위:
+ *   1) name 속성(사용자가 입력한 이름)
+ *   2) 층별 시퀀스 nseq → "N_3" 같은 형태
+ *   3) id 그대로 문자열로
+ */
 function nodeLabel(n) {
   const nm = (n?.name || "").trim();
   if (nm) return nm;
@@ -460,11 +778,21 @@ function nodeLabel(n) {
   return String(n?.id ?? "");
 }
 
-// 링크 라벨은 노드와 독립적으로 "lk_{lseq}"만 사용 (번호 충돌/혼동 방지)
+/**
+ * 링크 라벨 문자열 만들기
+ * - 노드와 헷갈리지 않도록 "lk_{lseq}"만 사용
+ * - lseq 없으면 id 그대로 사용
+ */
 function linkLabel(l) {
   if (Number.isInteger(l?.lseq) && l.lseq > 0) return `lk_${l.lseq}`;
   return String(l?.id ?? "");
 }
+
+
+/**
+ * 링크 양 끝 노드 이름을 "A → B" 형태로 표현
+ * - 같은 층의 노드 배열(nodes)에서 id로 찾아서 nodeLabel() 사용
+ */
 function linkEndpointsLabel(l, nodes) {
   // 같은 층의 노드 배열에서 id로 찾기
   const a = nodes.find((nn) => String(nn.id) === String(l.a));
@@ -473,6 +801,15 @@ function linkEndpointsLabel(l, nodes) {
   return `${nodeLabel(a)} → ${nodeLabel(b)}`;
 }
 
+
+/**
+ * 주어진 좌표(pt)에 가장 가까운 노드를 찾는다.
+ *
+ * @param {number} floor    - 층 index
+ * @param {{x:number,y:number}} pt - 이미지 좌표계 상의 점
+ * @param {number} maxDist  - 최대 허용 거리(px)
+ * @returns {object|null}   - 가까운 노드 또는 null
+ */
 function findNearestNodeForPoint(floor, pt, maxDist = 20) {
   const nodesF = nodesOnFloor(floor);
   let best = null;
@@ -489,33 +826,46 @@ function findNearestNodeForPoint(floor, pt, maxDist = 20) {
   }
 
   if (!best) return null;
-  if (Math.sqrt(bestD2) > maxDist) return null; // 너무 멀면 매칭 안 함
+
+  // 실제 거리(제곱근)가 maxDist보다 크면 너무 멀다고 판단
+  if (Math.sqrt(bestD2) > maxDist) return null;
 
   return best;
 }
 
+
+/**
+ * 우측 "폴리곤 속성" 패널을 현재 선택된 폴리곤 p 기준으로 갱신
+ * - p가 없으면 패널 숨김
+ * - p가 있으면 ID / 이름 / 네 점의 좌표 / 각 점에 붙은 노드 이름 표시
+ */
 function refreshPolygonPanel(p) {
   if (!els.polyGroup) return;
+
+  // 선택된 폴리곤이 없으면 패널 숨김
   if (!p) {
     els.polyGroup.style.display = "none";
     return;
   }
   els.polyGroup.style.display = "";
 
+  // ID, 이름
   els.polyId.value = p.id || "";
   els.polyName.value = p.name || "";
 
+  // 폴리곤이 속한 층과, p에 연결된 노드 id 배열
   const floor = Number(p.floor ?? currentFloor());
   const nodes = p.nodes || [];
 
+  // 폴리곤 UI용 4개 꼭짓점 입력(polyPts)에
+  // 실제 노드 좌표/이름을 채워넣기
   for (let i = 0; i < els.polyPts.length; i++) {
     const ui = els.polyPts[i];
-    const nid = nodes[i];
-    const n = nid ? getNodeById(nid) : null;
+    const nodeId = nodes[i];
+    const n = nodeId ? getNodeById(nodeId) : null;
 
-    if (!ui) continue;
-
-    if (!n) {
+    if (!n || Number(n.floor ?? 0) !== floor) {
+      // 해당하는 노드가 없거나, 층이 다르면 비워둔다
       ui.x.value = "";
       ui.y.value = "";
       ui.node.textContent = "";
@@ -528,6 +878,17 @@ function refreshPolygonPanel(p) {
   }
 }
 
+
+/**
+ * 그래프 데이터(state.graph)를 스캔해서
+ *  - 층별 노드 nseq
+ *  - 층별 링크 lseq
+ *  - 층별 폴리곤 pseq
+ * 을 다시 계산해서 state.seq에 반영한다.
+ *
+ * - 이미 nseq/lseq/pseq 값이 있으면 그 최대값을 기준으로,
+ *   없는 항목에만 새 번호를 부여한다.
+ */
 function rebuildSeqFromData() {
   // 데이터에 이미 nseq/lseq가 있으면 그 최대값으로 복구,
   // 없으면 생성 순서대로 부여
@@ -546,6 +907,7 @@ function rebuildSeqFromData() {
   }
   for (const [f, arr] of groupedNodes) {
     let maxSeq = 0;
+
     // 이미 nseq가 있으면 그걸 우선 신뢰
     for (const n of arr) {
       if (Number.isInteger(n.nseq) && n.nseq > maxSeq) maxSeq = n.nseq;
@@ -557,11 +919,12 @@ function rebuildSeqFromData() {
         n.nseq = maxSeq;
       }
     }
+
     state.seq.node[f] = maxSeq;
   }
 
   // --- 링크 ---
-  const groupedLinks = new Map();
+  const groupedLinks = new Map(); // floor -> [links...]
   for (const l of state.graph.links || []) {
     const f = Number(l.floor ?? 0);
     if (!groupedLinks.has(f)) groupedLinks.set(f, []);
@@ -569,48 +932,77 @@ function rebuildSeqFromData() {
   }
   for (const [f, arr] of groupedLinks) {
     let maxSeq = 0;
+
+    // 기존 lseq 최대값 찾기
     for (const l of arr) {
       if (Number.isInteger(l.lseq) && l.lseq > maxSeq) maxSeq = l.lseq;
     }
+
+    // 없는 링크에만 새 번호 부여
     for (const l of arr) {
       if (!Number.isInteger(l.lseq) || l.lseq <= 0) {
         maxSeq += 1;
         l.lseq = maxSeq;
       }
     }
+
     state.seq.link[f] = maxSeq;
   }
 
   // --- 폴리곤 ---
-  const groupedPolys = new Map();
+  const groupedPolys = new Map(); // floor -> [polygons...]
   for (const p of state.graph.polygons || []) {
     const f = Number(p.floor ?? 0);
     if (!groupedPolys.has(f)) groupedPolys.set(f, []);
     groupedPolys.get(f).push(p);
   }
+
   for (const [f, arr] of groupedPolys) {
     let maxSeq = 0;
+
+    // 기존 pseq 최대값 찾기
     for (const p of arr) {
       if (Number.isInteger(p.pseq) && p.pseq > maxSeq) maxSeq = p.pseq;
     }
+
+    // 없는 폴리곤에만 새 번호 부여
     for (const p of arr) {
       if (!Number.isInteger(p.pseq) || p.pseq <= 0) {
         maxSeq += 1;
         p.pseq = maxSeq;
       }
     }
+    
     state.seq.polygon[f] = maxSeq;
   }
 }
 
-// ----------------------------------------------
-// -------------- settings ----------------------
+/**
+ * 파일/프로젝트 이름에 쓸 문자열을 OS에서 안전한 형태로 정리
+ * - 양 끝 공백 제거
+ * - 빈 문자열이면 "project" 기본값
+ * - 윈도우/맥에서 폴더명으로 쓸 수 없는 문자 제거
+ * - 최대 길이 80자로 제한
+ */
 function sanitizeName(str) {
   const s = (str || "").trim() || "project";
   // 윈도우/맥에서 폴더명 불가 문자 제거
   return s.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
 }
 
+
+/**
+ * "현재 프로젝트 이름"을 여러 소스에서 종합해서 결정
+ *
+ * 우선순위:
+ *  1) 새 프로젝트 모달 입력값 (els.projectName)
+ *  2) 에디터 상단 input (els.projName.value)
+ *  3) 에디터 상단 라벨 텍스트(이름: ... 형태라면 접두사 제거)
+ *  4) state.projectName
+ *  5) 기타 예비 DOM (id="projectName")
+ *
+ * 반환값은 sanitizeName()으로 정리된 문자열.
+ */
 function getProjectName() {
   const s = (x) => (typeof x === "string" ? x.trim() : "");
 
@@ -631,6 +1023,7 @@ function getProjectName() {
   // 5) 기타 예비 (혹시 남아있는 id 기반 input)
   const fromDom = s(document.getElementById("projectName")?.value);
 
+  // 우선순위대로 하나 골라서 sanitize
   const name =
     fromModalInput ||
     fromHeaderInput ||
@@ -642,17 +1035,29 @@ function getProjectName() {
   return clean || "새 프로젝트";
 }
 
+
+/**
+ * 배경 이미지 <img id="bgImg"> 가 실제로 로드 완료되었을 때 호출.
+ * - naturalWidth, naturalHeight를 읽어서 stage/overlay 크기 세팅
+ * - 현재 view transform을 적용하고 overlay 다시 그림
+ */
 els.bgImg.addEventListener("load", () => {
   const natW = els.bgImg.naturalWidth || 1;
   const natH = els.bgImg.naturalHeight || 1;
+
   // stage/overlay를 자연 해상도 기준으로 맞추기
   els.stage.style.width = `${natW}px`;
   els.stage.style.height = `${natH}px`;
-  // 초기도 살짝 가운데 보이게 하려면 tx/ty 조정 가능(옵션)
+
   applyViewTransform();
   redrawOverlay();
 });
 
+/**
+ * 좌측 "층" 드롭다운(els.floorSelect)을 현재 state.floors 기준으로 채운다.
+ * - value: 0,1,2,... (0-based)
+ * - text : "1층", "2층", ...
+ */
 function populateFloorSelect() {
   els.floorSelect.innerHTML = "";
   for (let i = 0; i < state.floors; i++) {
@@ -661,8 +1066,19 @@ function populateFloorSelect() {
     o.textContent = i + 1 + "층";
     els.floorSelect.appendChild(o);
   }
+
+  // 현재 층 선택 반영
   els.floorSelect.value = String(state.currentFloor);
 }
+
+
+/**
+ * 프로젝트가 정상적으로 로드/생성된 이후 한 번 호출.
+ * - state.loaded 플래그 켜고
+ * - UI 활성화 / 빈 화면 숨김 / 상태 메시지 표시
+ * - 층 셀렉트/배경 렌더링
+ * - 히스토리 & "저장됨 기준 스냅샷" 초기화
+ */
 function activateProject() {
   state.loaded = true;
   setEnabled(true);
@@ -676,6 +1092,13 @@ function activateProject() {
   updateSavedSnapshot();
 }
 
+
+/**
+ * 나침반(방위) 패널에서 사용할 셀렉트 박스(From/To) 옵션을 갱신.
+ * - graph.nodes 전체를 돌면서
+ *   value: node.id (내부 식별자)
+ *   text : "이름 (N_nseq)" 형태 또는 "N_nseq / id"
+ */
 function populateCompassNodeSelects() {
   const make = (sel) => {
     if (!sel) return;
@@ -683,7 +1106,7 @@ function populateCompassNodeSelects() {
 
     for (const n of state.graph.nodes || []) {
       const opt = document.createElement("option");
-      opt.value = n.id; // ✅ 내부 id 사용
+      opt.value = n.id; // 내부 id 사용
 
       const labelSeq = n.nseq != null ? `N_${n.nseq}` : n.id;
       opt.textContent =
@@ -693,10 +1116,11 @@ function populateCompassNodeSelects() {
     }
   };
 
+  // From / To 셀렉트 박스 각각 채우기
   make(els.compassFrom);
   make(els.compassTo);
 
-  // 기존 northRef가 있으면 기본 선택
+  // 기존 northRef가 있으면 선택값 맞추기
   if (state.northRef?.from_node && els.compassFrom) {
     els.compassFrom.value = state.northRef.from_node;
   }
@@ -707,6 +1131,7 @@ function populateCompassNodeSelects() {
     els.compassAz.value = state.northRef.azimuth;
   }
 
+  // 하단 설명 라벨(예: "현재: A → B, 30°") 업데이트
   if (els.compassInfo) {
     const nf = state.northRef;
     if (nf?.from_node && nf?.to_node) {
@@ -723,14 +1148,26 @@ function populateCompassNodeSelects() {
   }
 }
 
+
 // ------------------------------------------------------------
-// -------------------- snap ----------------------------------
+// -------------------- snap (스냅 가이드) --------------------
+// ------------------------------------------------------------
+
+/**
+ * 스냅 후보가 될 수 있는 모든 '앵커 포인트'를 모아서 배열로 반환.
+ * - 노드 좌표
+ * - (옵션) 링크 끝점
+ * - (옵션) 사각형/폴리곤 꼭짓점
+ *
+ * 반환 예: [{x:10,y:20}, {x:50,y:80}, ...]
+ */
 function collectSnapAnchors() {
   const a = [];
+
   // 1) 노드
   for (const n of state.graph.nodes) a.push({ x: n.x, y: n.y });
 
-  // 2) (선택) 링크 끝점
+  // 2) 링크 끝점 (각 링크의 A,B 노드 좌표)
   for (const l of state.graph.links || []) {
     const A = state.graph.nodes.find((n) => n.id === l.a);
     const B = state.graph.nodes.find((n) => n.id === l.b);
@@ -738,13 +1175,15 @@ function collectSnapAnchors() {
     if (B) a.push({ x: B.x, y: B.y });
   }
 
-  // 3) (있다면) 사각형/폴리곤 꼭짓점
-  for (const r of state.graph.rects || []) {
-    a.push({ x: r.x, y: r.y });
-    a.push({ x: r.x + r.w, y: r.y });
-    a.push({ x: r.x, y: r.y + r.h });
-    a.push({ x: r.x + r.w, y: r.y + r.h });
-  }
+  // 3) 사각형/폴리곤 꼭짓점
+  // for (const r of state.graph.rects || []) {
+  //   a.push({ x: r.x, y: r.y });
+  //   a.push({ x: r.x + r.w, y: r.y });
+  //   a.push({ x: r.x, y: r.y + r.h });
+  //   a.push({ x: r.x + r.w, y: r.y + r.h });
+  // }
+
+  // 4) 폴리곤에 연결된 노드 좌표
   for (const p of state.graph.polygons || []) {
     for (const nid of p.nodes || []) {
       const n = getNodeById(nid);
@@ -754,19 +1193,53 @@ function collectSnapAnchors() {
   return a;
 }
 
+
+/**
+ * 주어진 포인트(px, py)에 대해
+ *  - 수직/수평 방향으로 가장 가까운 스냅 후보(v, h)를 찾는다.
+ *
+ * @param {number} px - 기준 x (이미지 좌표)
+ * @param {number} py - 기준 y
+ * @param {number} tol - 허용 거리(px). 기본값 state.snap.tol
+ *
+ * 반환값 예:
+ *   {
+ *     v: { x, ax, ay, dx }, // 수직 스냅 (x좌표 기준)
+ *     h: { y, ax, ay, dy }  // 수평 스냅 (y좌표 기준)
+ *   }
+ *  - ax, ay : 기준이 되는 스냅 앵커 좌표
+ *  - dx, dy : 거리(절대값)
+ */
 function getAxisSnapCandidates(px, py, tol = state.snap.tol) {
   const anchors = collectSnapAnchors();
   let v = null; // { x, ax, ay, dx }
   let h = null; // { y, ax, ay, dy }
+
   for (const p of anchors) {
     const dx = Math.abs(px - p.x);
     const dy = Math.abs(py - p.y);
-    if (dx <= tol && (!v || dx < v.dx)) v = { x: p.x, ax: p.x, ay: p.y, dx };
-    if (dy <= tol && (!h || dy < h.dy)) h = { y: p.y, ax: p.x, ay: p.y, dy };
+
+    // 수직 스냅 후보 갱신
+    if (dx <= tol && (!v || dx < v.dx)) {
+      v = { x: p.x, ax: p.x, ay: p.y, dx };
+    }
+
+    // 수평 스냅 후보 갱신
+    if (dy <= tol && (!h || dy < h.dy)) {
+      h = { y: p.y, ax: p.x, ay: p.y, dy };
+    }
   }
   return { v, h };
 }
 
+
+/**
+ * SVG overlay 위에 스냅 가이드 라인/점 그리기
+ * - state.snap.cand에 저장된 v/h 후보를 사용해서
+ *   빨간 점선(가로/세로)과 스냅 포인트 점을 표시.
+ *
+ * @param {SVGSVGElement} svg - overlay 루트 SVG 요소
+ */
 function drawSnapGuides(svg) {
   // 기존 가이드 제거
   const old = svg.querySelector("#snap-guides");
@@ -775,16 +1248,18 @@ function drawSnapGuides(svg) {
   const { v, h } = state.snap.cand || {};
   if (!v && !h) return;
 
+  // 새 그룹 생성
   const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
   g.setAttribute("id", "snap-guides");
   g.setAttribute("pointer-events", "none");
 
+  // SVG 전체 크기 계산 (imageSize 있으면 우선 사용)
   const W =
     state.imageSize?.width ?? svg.viewBox.baseVal.width ?? svg.clientWidth;
   const H =
     state.imageSize?.height ?? svg.viewBox.baseVal.height ?? svg.clientHeight;
 
-  // 스타일 공통
+  // 공통 스타일의 line 생성 헬퍼
   const mkLine = () => {
     const ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
     ln.setAttribute("stroke", "#FF3B30"); // 보기 쉬운 빨강
@@ -794,6 +1269,7 @@ function drawSnapGuides(svg) {
     return ln;
   };
 
+  // 수직 스냅 라인
   if (v) {
     const ln = mkLine();
     ln.setAttribute("x1", v.x);
@@ -802,6 +1278,8 @@ function drawSnapGuides(svg) {
     ln.setAttribute("y2", H);
     g.appendChild(ln);
   }
+
+  // 수평 스냅 라인
   if (h) {
     const ln = mkLine();
     ln.setAttribute("x1", 0);
@@ -811,6 +1289,7 @@ function drawSnapGuides(svg) {
     g.appendChild(ln);
   }
 
+  // 스냅 교차점 표시용 점(circle)
   const mkDot = (cx, cy) => {
     const dot = document.createElementNS(
       "http://www.w3.org/2000/svg",
@@ -825,11 +1304,14 @@ function drawSnapGuides(svg) {
   };
 
   if (v && h) {
+    // v, h 둘 다 있을 때는 교차점에 점 하나
     g.appendChild(mkDot(v.x, h.y));
   } else if (v) {
+    // 수직만 있을 때는 y는 마우스/앵커 기반으로 결정
     const cy = v.ay != null ? v.ay : state.mouse?.y ?? 0;
     g.appendChild(mkDot(v.x, cy));
   } else if (h) {
+    // 수평만 있을 때는 x는 마우스/앵커 기반
     const cx = h.ax != null ? h.ax : state.mouse?.x ?? 0;
     g.appendChild(mkDot(cx, h.y));
   }
@@ -837,6 +1319,12 @@ function drawSnapGuides(svg) {
   svg.appendChild(g);
 }
 
+
+// ---------------------------------------------------------------------------
+// 전역 이벤트: 휠, 키보드 단축키, 페이지 이탈 시 경고
+// ---------------------------------------------------------------------------
+
+// 브라우저 기본 Ctrl+휠 줌 막기 (특히 크롬 전체 페이지 줌)
 window.addEventListener(
   "wheel",
   (e) => {
@@ -844,24 +1332,38 @@ window.addEventListener(
   },
   { passive: false }
 );
+
+/**
+ * 키보드 단축키 처리
+ * - Ctrl+Z / Cmd+Z         : Undo
+ * - Ctrl+Shift+Z / Ctrl+Y  : Redo
+ * - Delete / Backspace     : 선택 항목 삭제
+ * - Shift                  : 스냅 / 보조기능 플래그
+ * - Alt                    : 보조 플래그
+ * - Ctrl + (+/- 등)        : 브라우저 줌 막기
+ */
 window.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
 
-  // Ctrl+Z (또는 Cmd+Z)
+  // input / textarea 에서는 기본 동작 유지 (커서 이동, 텍스트 삭제 등)
+  if (tag === "input" || tag === "textarea") {
+    // 단, Ctrl+Z / Y 는 막고 에디터 전역 Undo/Redo로 돌리고 싶다면
+    // 여기서 예외 처리할 수도 있음
+  }
+
+  // Ctrl+Z (또는 Cmd+Z) → Undo
   if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
     e.preventDefault();
     undo();
     return;
   }
 
-  // Ctrl+Y | redo
+  // Ctrl+Y or Ctrl+Shift+Z → Redo
   if (
     (e.ctrlKey || e.metaKey) &&
     ((e.shiftKey && (e.key === "z" || e.key === "Z")) ||
-      e.key === "y" ||
-      e.key === "Y")
+      e.key.toLowerCase() === "y")
   ) {
-    if (tag === "input" || tag === "textarea") return;
     e.preventDefault();
     redo();
     return;
@@ -890,6 +1392,7 @@ window.addEventListener("keydown", (e) => {
     deleteCurrentSelection();
   }
 
+  // Ctrl + = / + / - / _ → 브라우저 줌 방지
   if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
     e.preventDefault();
   }
@@ -914,6 +1417,11 @@ window.addEventListener("keyup", (e) => {
   }
 });
 
+/**
+ * 창을 닫기 전에 "저장 안 된 변경사항"이 있으면 경고창 표시
+ * - state.loaded: 프로젝트가 실제로 열려 있는지
+ * - hasUnsavedChanges(): 저장 스냅샷과 현재 상태 비교
+ */
 window.addEventListener("beforeunload", (e) => {
   if (!state.loaded) return;
   if (!hasUnsavedChanges()) return;
@@ -921,7 +1429,17 @@ window.addEventListener("beforeunload", (e) => {
   e.returnValue = ""; // 크롬 등에서 기본 경고창 띄우는 트리거
 });
 
-// 휠로 확대/축소 – 마우스 기준 줌
+
+
+// ---------------------------------------------------------------------------
+// 캔버스 줌/팬 (마우스 휠 + 드래그)
+// ---------------------------------------------------------------------------
+
+/**
+ * 캔버스에서의 휠 줌
+ * - 마우스 위치를 기준으로 확대/축소
+ * - state.view.scale / tx / ty를 조정한 뒤 applyViewTransform 호출
+ */
 els.canvas.addEventListener(
   "wheel",
   (e) => {
@@ -953,10 +1471,19 @@ els.canvas.addEventListener(
   },
   { passive: false }
 );
+
+// 팬(이동) 상태 플래그
 let isPanning = false;
+// 드래그 시작 시점
 let panStart = { x: 0, y: 0 };
+// 드래그 시작 시점의 view tx/ty
 let viewStart = { tx: 0, ty: 0 };
 
+/**
+ * 캔버스 마우스 다운
+ * - 중간 버튼 or 스페이스+드래그로 화면 이동
+ * - 그 외에는 툴별 클릭 동작 (노드 생성/선택 등)으로 넘긴다.
+ */
 els.canvas.addEventListener("mousedown", (e) => {
   // 스페이스바를 누르고 드래그하면 화면 이동
   if (
@@ -966,8 +1493,6 @@ els.canvas.addEventListener("mousedown", (e) => {
     e.ctrlKey === false &&
     e.metaKey === false
   ) {
-    // 기본은 툴 클릭 동작이 있으니, '스페이스'로만 팬하고 싶으면 아래 조건을 바꿔:
-    // if (!e.button && e.code === 'Space') ...
   }
   if (
     e.button === 1 ||
@@ -995,8 +1520,11 @@ els.canvas.addEventListener("pointerdown", (e) => {
     els.canvas.setPointerCapture(e.pointerId);
   }
 });
+
 els.canvas.addEventListener("pointermove", (e) => {
   if (!isPanning) return;
+
+  // 팬 중이면 마우스 이동량만큼 view.tx/ty 이동
   const dx = e.clientX - panStart.x;
   const dy = e.clientY - panStart.y;
   state.view.tx = viewStart.tx + dx;
@@ -1009,6 +1537,15 @@ els.canvas.addEventListener("pointerup", (e) => {
     els.canvas.releasePointerCapture(e.pointerId);
   }
 });
+
+
+
+/**
+ * clientX/clientY(화면 좌표)를
+ * "배경 이미지 좌표계"로 변환해 주는 헬퍼
+ * - 캔버스의 boundingClientRect
+ * - state.view.scale / tx / ty 를 고려해서 역변환
+ */
 function imagePointFromClient(ev) {
   const { left, top } = els.canvas.getBoundingClientRect();
   // const { scale, tx, ty } = state.view;
@@ -1027,23 +1564,52 @@ function imagePointFromClient(ev) {
   };
 }
 
+
+
+// ---------------------------------------------------------------------------
+// SVG overlay 전체를 다시 그리기 (노드/링크/폴리곤 등)
+// ---------------------------------------------------------------------------
+
+/**
+ * overlay SVG 전체를 다시 그리는 함수
+ *
+ * 그리는 순서:
+ *  1) SVG 크기/좌표계 설정 (배경 이미지 크기에 맞춤)
+ *  2) 현재 층의 폴리곤들 (채움 + 라벨)
+ *  3) 폴리곤 도구 사용 시, 드래프트(미완성) 폴리곤 프리뷰
+ *  4) 현재 층의 링크들 (히트라인 + 실제 라인)
+ *  5) 현재 층의 노드들 (도구/선택 상태에 따라 서로 다른 스타일)
+ *  6) 링크 도구 사용 시, from 노드에서 마우스 위치까지의 프리뷰 선
+ *  7) 스냅 가이드 라인/점 (drawSnapGuides 호출)
+ *  8) 우측 통계(현재 층 / 전체 노드·링크·폴리곤 수) 갱신 + 레이어 패널 업데이트
+ */
 function redrawOverlay() {
   const svg = els.overlay;
 
+  // -------------------------------------------------------------------------
+  // 1) 배경 이미지 크기에 맞춰 overlay SVG 기본 속성 조정
+  // -------------------------------------------------------------------------  
   const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
   const natH = els.bgImg.naturalHeight || els.bgImg.height || 1;
 
+  // overlay SVG 자체의 픽셀 크기
   svg.style.width = `${natW}px`;
   svg.style.height = `${natH}px`;
+
+  // viewBox는 SVG 내부 좌표계를 설정한다.
+  // 배경 이미지의 크기와 정확히 일치하도록 세팅.  
   svg.setAttribute("viewBox", `0 0 ${natW} ${natH}`);
   svg.setAttribute("width", natW);
   svg.setAttribute("height", natH);
 
+  // 기존에 그려져 있던 모든 요소 제거 (완전 리셋)
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
   const floor = currentFloor();
 
-  // polygon
+  // -------------------------------------------------------------------------
+  // 2) 폴리곤 렌더링 (현재 층만)
+  // -------------------------------------------------------------------------
   const currentFloorPolygons = (state.graph.polygons || []).filter(
     (p) => Number(p.floor ?? 0) === Number(state.currentFloor)
   );
@@ -1052,16 +1618,19 @@ function redrawOverlay() {
     if (Number(p.floor ?? 0) !== floor) continue;
 
     // 1) 이 폴리곤이 참조하는 노드들 가져오기
+    //    - p.nodes 는 노드 id 배열
+    //    - 각 id로 실제 노드 객체를 찾아온 뒤, null은 제거
     const nodesForPoly = (p.nodes || [])
       .map((nid) => getNodeById(nid))
       .filter(Boolean); // null 제거
 
+    // 노드가 3개 미만이면 폴리곤을 그릴 수 없다.
     if (nodesForPoly.length < 3) continue;
 
-    // 2) SVG points 속성
+    // 2) SVG polygon의 points 속성 문자열 만들기: "x1,y1 x2,y2 ..."
     const pointsAttr = nodesForPoly.map((pt) => `${pt.x},${pt.y}`).join(" ");
 
-    // 채움
+    // 채움용 polygon 엘리먼트 생성
     const poly = document.createElementNS(
       "http://www.w3.org/2000/svg",
       "polygon"
@@ -1069,13 +1638,14 @@ function redrawOverlay() {
     poly.setAttribute("points", pointsAttr);
     poly.setAttribute("class", "poly-fill");
 
+    // 현재 선택된 폴리곤이면 CSS로 하이라이트
     if (state.selection?.type === "polygon" && state.selection.id === p.id) {
       poly.classList.add("selected");
     }
 
     svg.appendChild(poly);
 
-    // 3) 라벨 위치(노드 중심 기준)
+    // 3) 폴리곤 라벨 위치 (모든 꼭짓점의 중심점)
     const cx =
       nodesForPoly.reduce((sum, n) => sum + n.x, 0) / nodesForPoly.length;
     const cy =
@@ -1085,27 +1655,32 @@ function redrawOverlay() {
     lbl.setAttribute("x", cx);
     lbl.setAttribute("y", cy);
     lbl.setAttribute("class", "label");
+
+    // 이름이 있으면 이름, 없으면 "PG_시퀀스" 형태
     lbl.textContent = p.name || `PG_${p.pseq}`;
     svg.appendChild(lbl);
   }
 
-  // 드래프트
+  // -------------------------------------------------------------------------
+  // 3) 폴리곤 도구 사용 시: 드래프트(미완성) 폴리곤 프리뷰
+  // -------------------------------------------------------------------------
   if (state.tool === "polygon" && state.polygonDraft) {
     const floor = Number(state.polygonDraft.floor ?? currentFloor());
 
-    // 1) 선택된 노드들의 좌표
+    // 1) 이미 확정된 정점 노드들의 좌표
     const fixedPts = (state.polygonDraft.nodes || [])
       .map((nid) => getNodeById(nid))
       .filter((n) => n && Number(n.floor ?? 0) === floor)
       .map((n) => ({ x: n.x, y: n.y }));
 
-    // 2) 마우스 위치를 마지막 점으로 붙여서 미리보기
+    // 2) 마우스 현재 위치를 마지막 점으로 붙여서 "가상 선" 미리보기
     const pts = [...fixedPts];
     if (state.mouse) {
       pts.push({ x: state.mouse.x, y: state.mouse.y });
     }
 
     if (pts.length >= 2) {
+      // 선(PolyLine)으로 연결해서 폴리곤 윤곽 프리뷰
       const path = document.createElementNS(
         "http://www.w3.org/2000/svg",
         "polyline"
@@ -1114,7 +1689,7 @@ function redrawOverlay() {
       path.setAttribute("class", "poly-preview");
       svg.appendChild(path);
 
-      // 점 핸들 (실제 노드 위치만)
+      // 이미 찍힌 정점 위치에 작은 점(circle)들도 같이 그림
       for (const pt of fixedPts) {
         const c = document.createElementNS(
           "http://www.w3.org/2000/svg",
@@ -1129,14 +1704,20 @@ function redrawOverlay() {
     }
   }
 
-  // links
+  // -------------------------------------------------------------------------
+  // 4) 링크 렌더링 (현재 층만)
+  //   - 실제 보이는 선(vis) + 클릭 히트영역(hit)을 분리해서 그린다.
+  // -------------------------------------------------------------------------
   const currentFloorLinks = linksOnFloor(floor);
   for (const lk of currentFloorLinks) {
     const a = state.graph.nodes.find((n) => n.id === lk.a);
     const b = state.graph.nodes.find((n) => n.id === lk.b);
     if (!a || !b) continue;
 
+    // 그룹 g 안에
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+
+    // ① 굵은 투명 히트라인 (클릭 잘 되게)
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "line");
 
     hit.classList.add("link-hit");
@@ -1148,6 +1729,8 @@ function redrawOverlay() {
     hit.setAttribute("stroke", "transparent");
     hit.setAttribute("stroke-width", "14");
     hit.dataset.id = lk.id;
+
+    // 링크 선택 클릭 이벤트 (select 도구일 때만 동작)
     hit.addEventListener(
       "pointerdown",
       (e) => {
@@ -1167,6 +1750,8 @@ function redrawOverlay() {
     vis.setAttribute("x2", b.x);
     vis.setAttribute("y2", b.y);
     vis.dataset.id = lk.id;
+
+    // 현재 선택된 링크면 CSS로 하이라이트
     if (state.selection?.type === "link" && state.selection.id === lk.id) {
       vis.classList.add("selected");
     }
@@ -1176,28 +1761,34 @@ function redrawOverlay() {
     svg.appendChild(g);
   }
 
-  // nodes
+  // -------------------------------------------------------------------------
+  // 5) 노드 렌더링 (현재 층만)
+  //   - 선택/도구 상태에 따라 스타일 다르게 적용
+  // -------------------------------------------------------------------------
   const currentFloorNodes = nodesOnFloor(floor);
   for (const n of currentFloorNodes) {
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("cx", n.x);
     c.setAttribute("cy", n.y);
     c.setAttribute("r", 5);
+
+    // (1) 선택 도구에서 선택된 노드인지
     const isSelectedNode =
       state.tool === "select" &&
       state.selection?.type === "node" && 
       state.selection.id === n.id;
 
+    // (2) 링크 도구에서 "from" 으로 찍힌 노드인지
     const isLinkPending = state.tool === "link" && pendingLinkFrom === n.id;
 
-    // 폴리곤 도구에서 이미 정점으로 찍힌 노드인지
+    // (3) 폴리곤 도구에서 이미 정점으로 포함된 노드인지
     const isPolyVertex =
       state.tool === "polygon" &&
       state.polygonDraft &&
       Array.isArray(state.polygonDraft.nodes) &&
       state.polygonDraft.nodes.includes(n.id);
 
-    // 나침반 도구에서 선택한 A/B 노드인지 (있다면)
+    // (4) 나침반 도구에서 임시 선택된 A/B 노드인지
     const isCompassPicked =
       state.tool === "compass" &&
       state.compass &&
@@ -1221,26 +1812,32 @@ function redrawOverlay() {
     }
 
     c.dataset.id = n.id;
+
+    // 클릭 시: 도구에 따라 다른 동작
     c.addEventListener("click", (e) => {
       if (state.tool === "select") {
+        // 선택 도구: 노드 선택
         e.stopPropagation();
         selectNode(n.id);
       } else if (state.tool === "link") {
+        // 링크 도구: 링크 from/to 지정
         e.stopPropagation();
         handleLinkPick(n.id);
       } else if (state.tool === "polygon") {
+        // 폴리곤 도구: 정점 추가
         e.stopPropagation();
         addVertexToPolygonDraft(n.id);
       } else if (state.tool === "compass") {
+        // 나침반(방위) 도구: A,B 노드 선택
         e.stopPropagation();
 
         if (!state.compass) state.compass = { tempA: null, tempB: null };
 
-        // first selection
+        // first selection (tempA 채우기)
         if (!state.compass.tempA) {
           state.compass.tempA = n.id;
 
-          if (els.compassFrom) els.compassFrom.value = n.id; // ★ 패널 From 반영
+          if (els.compassFrom) els.compassFrom.value = n.id; // 패널 From 반영
           if (els.compassTo && !els.compassTo.value) els.compassTo.value = ""; // 두 번째는 비워두기
 
           if (els.status)
@@ -1250,20 +1847,21 @@ function redrawOverlay() {
           return;
         }
 
-        // second selection
+        // second selection (tempB 채우기), 단 A와 다른 노드여야 함
         if (!state.compass.tempB && n.id !== state.compass.tempA) {
           state.compass.tempB = n.id;
 
-          if (els.compassTo) els.compassTo.value = n.id; // ★ 패널 To 반영
+          if (els.compassTo) els.compassTo.value = n.id; // 패널 To 반영
 
           const A = state.graph.nodes.find((x) => x.id === state.compass.tempA);
           const B = state.graph.nodes.find((x) => x.id === state.compass.tempB);
 
           if (A && B) {
-            // 나중에 진짜 각도 계산 넣고 싶으면 여기서 계산
+            // 여기서 실제 방위각(나침반 각도)을 계산할 수도 있음
+            // 지금은 기본값 0 또는 입력된 값 사용
             let az = 0;
 
-            // 패널 Azimuth 값 없으면 기본 0으로 세팅
+            // 패널에 값이 없으면 기본 0, 있으면 그 값을 파싱
             if (els.compassAz && !els.compassAz.value) {
               els.compassAz.value = String(az);
             } else if (els.compassAz) {
@@ -1289,20 +1887,23 @@ function redrawOverlay() {
             }
           }
 
-          // 다음 측정을 위해 초기화
+          // 한 번 설정이 끝나면 다음 측정을 위해 A/B 초기화
           state.compass.tempA = null;
           state.compass.tempB = null;
           redrawOverlay?.();
         }
       }
     });
-
+    
+    // 노드 드래그 이동 (select 도구일 때만)
     c.addEventListener("pointerdown", (e) => {
       if (state.tool !== "select") return;
       e.stopPropagation();
       e.preventDefault();
 
       selectNode(n.id);
+
+      // 드래그 시작 시점의 이미지 좌표와 노드 좌표 저장
       const { x, y } = imagePointFromClient(e);
       draggingNodeId = n.id;
       dragStart = { x, y };
@@ -1313,7 +1914,9 @@ function redrawOverlay() {
     svg.appendChild(c);
   }
 
-  // link
+  // -------------------------------------------------------------------------
+  // 6) 링크 도구 프리뷰: from 노드에서 마우스까지 실시간 가이드 선
+  // -------------------------------------------------------------------------
   if (state.tool === "link" && pendingLinkFrom) {
     const startNode = state.graph.nodes.find((n) => n.id === pendingLinkFrom);
     if (startNode) {
@@ -1327,7 +1930,7 @@ function redrawOverlay() {
         orient = dx >= dy ? "h" : "v";
         if (orient === "h") py = startNode.y;
         else px = startNode.x;
-        // 가이드 세팅 (redraw가 여러 번 불려도 문제 없음)
+        // 스냅 가이드 정보 기억 (anchor: 시작 노드)
         state.snapGuide = {
           anchor: { x: startNode.x, y: startNode.y },
           orient,
@@ -1336,6 +1939,7 @@ function redrawOverlay() {
         state.snapGuide = null;
       }
 
+      // 실제 프리뷰 라인
       const pl = document.createElementNS("http://www.w3.org/2000/svg", "line");
       pl.setAttribute("x1", startNode.x);
       pl.setAttribute("y1", startNode.y);
@@ -1346,17 +1950,34 @@ function redrawOverlay() {
     }
   }
 
+
+  // -------------------------------------------------------------------------
+  // 7) 스냅 가이드 (십자선/점) 렌더링
+  //    - drawSnapGuides 내부에서 state.snap.cand를 보고 그림
+  // -------------------------------------------------------------------------  
   drawSnapGuides(els.overlay);
 
-  // 통계 갱신
+  // -------------------------------------------------------------------------
+  // 8) 우측 통계 / 레이어 패널 갱신
+  // -------------------------------------------------------------------------
+  // 현재 층 정보
   els.layerInfo.innerHTML = `🔵 노드: ${currentFloorNodes.length}<br/>🔗 링크: ${currentFloorLinks.length}<br/>⬛ 폴리곤: ${currentFloorPolygons.length}`;
+  // 전체 층 합산 정보
   els.totalInfo.innerHTML = `🔵 노드: ${state.graph.nodes.length}<br/>🔗 링크: ${state.graph.links.length}<br/>⬛ 폴리곤: ${state.graph.polygons.length}`;
 
+  // 우측 레이어 패널(리스트)도 함께 갱신
   updateLayersPanel();
 }
 
 window.addEventListener("resize", redrawOverlay);
 
+
+
+/**
+ * 뷰 트랜스폼(줌/팬)을 stage에 적용
+ * - CSS transform으로 translate / scale
+ * - 상단 확대 비율 라벨도 함께 갱신
+ */
 function applyViewTransform() {
   const { scale, tx, ty } = state.view;
   els.stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
@@ -1364,13 +1985,31 @@ function applyViewTransform() {
   document.getElementById("zoomLbl")?.replaceChildren(`🔍 ${z}%`);
 }
 
+/**
+ * updateLayersPanel()
+ * ---------------------------------------------------------------------------
+ * 우측 레이어 패널을 갱신하는 함수.
+ *
+ * 패널 구성:
+ *   1) 현재 층의 객체 개수 표시 (노드 / 링크 / 폴리곤)
+ *   2) 전체 프로젝트 기준 총 개수 표시
+ *   3) 현재 층의 요소들을 리스트 형태로 출력
+ *      - 노드    : 🔵 N_label
+ *      - 링크    : 🟢 A → B
+ *      - 폴리곤  : 🟥 name
+ *
+ * 리스트 항목 클릭 시 선택(selectNode / selectLink / selectPolygon)
+ * ---------------------------------------------------------------------------
+ */
 function updateLayersPanel() {
-  const f = currentFloor();
+  const f = currentFloor(); // 현재 층 번호
 
+  // 전체 데이터
   const allNodes = state.graph?.nodes || [];
   const allLinks = state.graph?.links || [];
   const allPolys = state.graph?.polygons || [];
 
+  // 현재 층 데이터
   const nodesF = nodesOnFloor(f);
   const linksF = linksOnFloor(f);
   const polysF = polysOnFloor
@@ -1379,16 +2018,24 @@ function updateLayersPanel() {
         (p) => Number(p.floor ?? 0) === Number(f)
       );
 
-  // 우측 상단 카운트들 (현재 층 / 전체)
+
+  // -------------------------------------------------------------------------
+  // 1) 우측 상단 통계 영역(현재 층 / 전체)
+  // -------------------------------------------------------------------------
   if (els.infoCurrentNodes)
     els.infoCurrentNodes.textContent = String(nodesF.length);
   if (els.infoCurrentLinks)
     els.infoCurrentLinks.textContent = String(linksF.length);
-  if (els.infoAllNodes) els.infoAllNodes.textContent = String(allNodes.length);
-  if (els.infoAllLinks) els.infoAllLinks.textContent = String(allLinks.length);
+  if (els.infoAllNodes) 
+    els.infoAllNodes.textContent = String(allNodes.length);
+  
+  // 전체 합산
+  if (els.infoAllLinks) 
+    els.infoAllLinks.textContent = String(allLinks.length);
   if (els.infoCurrentPolys)
     els.infoCurrentPolys.textContent = String(polysF.length);
-  if (els.infoAllPolys) els.infoAllPolys.textContent = String(allPolys.length);
+  if (els.infoAllPolys) 
+    els.infoAllPolys.textContent = String(allPolys.length);
 
   // 리스트 컨테이너
   const box = els.layersList || document.getElementById("layersList");
@@ -1402,7 +2049,9 @@ function updateLayersPanel() {
     li.classList.add("active");
   }
 
-  // 1) 노드 (현재 층 전용)
+  // -------------------------------------------------------------------------
+  // (A) 현재 노드 리스트
+  // -------------------------------------------------------------------------
   for (const n of nodesF) {
     const li = document.createElement("div");
     li.className = "layer-item node";
@@ -1417,7 +2066,7 @@ function updateLayersPanel() {
       <span class="label">🔵 ${nodeLabel(n)}</span>
     `;
 
-    // ✅ 클릭하면 기존 selectNode 호출 → 오른쪽 속성 패널 갱신
+    // 클릭하면 기존 selectNode 호출 → 오른쪽 속성 패널 갱신
     li.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1437,7 +2086,9 @@ function updateLayersPanel() {
     box.appendChild(li);
   }
 
-  // 2) 링크 (현재 층 전용)
+  // -------------------------------------------------------------------------
+  // (B) 현재 링크 리스트
+  // -------------------------------------------------------------------------
   for (const l of linksF) {
     const li = document.createElement("div");
     li.className = "layer-item link";
@@ -1451,7 +2102,7 @@ function updateLayersPanel() {
       <span class="label">🔗 ${linkLabel(l)}</span>
     `;
 
-    // ✅ 클릭하면 기존 selectLink 호출 → 속성 패널 갱신
+    // 클릭하면 기존 selectLink 호출 → 속성 패널 갱신
     li.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1470,7 +2121,9 @@ function updateLayersPanel() {
     box.appendChild(li);
   }
 
-  // 🔹 3) 폴리곤 (현재 층 전용)
+  // -------------------------------------------------------------------------
+  // (C) 현재 폴리곤 리스트
+  // -------------------------------------------------------------------------
   for (const p of polysF) {
     const li = document.createElement("div");
     li.className = "layer-item polygon";
@@ -1546,6 +2199,9 @@ function updateLayersPanel() {
     if (cur) cur.classList.add("active");
   }
 }
+
+
+` ********************************* TODO: 주석 추가 *************************** `
 
 function hasLinkBetween(a, b) {
   return state.graph.links.some(
@@ -2157,7 +2813,7 @@ function finalizePolygon() {
   state.seq.polygon[f] = (state.seq.polygon[f] ?? 0) + 1;
 
   const newPoly = {
-    id: `pg_${Date.now()}`, // node의 nextNodeId처럼, 필요하면 nextPolyId()로 빼도 됨
+    id: nextPolyId(),
     floor: f,
     pseq: nextPolySeq(f), // 층별 표기 번호
     name: "",
@@ -2247,6 +2903,11 @@ function applyToolCursor() {
   if (els && els.overlay) els.overlay.style.cursor = cur;
 }
 
+/**
+ * 현재 활성 도구를 변경한다.
+ * - toolbar 버튼 active 상태 갱신
+ * - 선택 상태/임시 상태를 초기화할 수도 있음
+ */
 function setTool(next) {
   state.tool = next;
   if (els && els.status) els.status.textContent = `현재 도구: ${state.tool}`;
@@ -2274,7 +2935,6 @@ function setTool(next) {
 
   if (next !== "polygon") state.polygonDraft = null;
 
-  // 여기 두 줄이 맨 끝에 오도록
   applyToolCursor();
   redrawOverlay();
 }
