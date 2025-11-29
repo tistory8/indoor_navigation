@@ -3,10 +3,8 @@ import {
   apiUpdateProject,
   apiCreateProject,
   apiUploadFloorImage,
-  API_BASE,
   API_ORIGIN,
 } from "./api.js";
-import { qs } from "./common.js";
 
 // === ID counters ============================================================
 let counters = {
@@ -27,8 +25,6 @@ function nextNodeId() {
 function nextLinkId() {
   return `lk_${counters.link++}`;
 }
-// 필요하면 화살표/폴리곤/직사각형도 동일 패턴으로 사용
-// function nextArrowId() { return `ar_${counters.arrow++}`; } ...
 
 // 현재 로드된 데이터에서 시퀀스 재설정
 function setCountersFromData(json) {
@@ -90,7 +86,6 @@ const state = {
 };
 state.mouse = { x: 0, y: 0 };
 
-
 // === Undo/Redo history ===
 state.history = {
   stack: [],
@@ -151,7 +146,6 @@ function hasUnsavedChanges() {
   return cur !== state._savedSnapshot;
 }
 
-
 function resetHistory() {
   state.history = { stack: [], index: -1, max: 100 };
   const snap = makeSnapshot(); // 현재 상태 (로드 직후)
@@ -203,7 +197,6 @@ function redo() {
 // snapshot
 state.keys = { shift: false, alt: false }; // Alt까지 같이 쓰고 싶으면 여기서 정의
 state.snapGuide = null;
-
 
 // save
 state.northRef = state.northRef || {
@@ -853,7 +846,7 @@ window.addEventListener(
 );
 window.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
-  
+
   // Ctrl+Z (또는 Cmd+Z)
   if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
     e.preventDefault();
@@ -862,10 +855,12 @@ window.addEventListener("keydown", (e) => {
   }
 
   // Ctrl+Y | redo
-  if ((e.ctrlKey || e.metaKey) &&
-      ((e.shiftKey && (e.key === "z" || e.key === "Z")) ||
-        e.key === "y" ||
-        e.key === "Y")) {
+  if (
+    (e.ctrlKey || e.metaKey) &&
+    ((e.shiftKey && (e.key === "z" || e.key === "Z")) ||
+      e.key === "y" ||
+      e.key === "Y")
+  ) {
     if (tag === "input" || tag === "textarea") return;
     e.preventDefault();
     redo();
@@ -883,17 +878,18 @@ window.addEventListener("keydown", (e) => {
     redrawOverlay();
   }
 
-
   // Delete / Backspace → 선택된 요소 삭제
-  if ((e.key === "Delete" || e.key === "Backspace") &&
-      !e.ctrlKey && !e.metaKey) {
+  if (
+    (e.key === "Delete" || e.key === "Backspace") &&
+    !e.ctrlKey &&
+    !e.metaKey
+  ) {
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea") return; // 텍스트 삭제는 그대로 두기
     e.preventDefault();
     deleteCurrentSelection();
   }
 
-  
   if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
     e.preventDefault();
   }
@@ -924,7 +920,6 @@ window.addEventListener("beforeunload", (e) => {
   e.preventDefault();
   e.returnValue = ""; // 크롬 등에서 기본 경고창 띄우는 트리거
 });
-
 
 // 휠로 확대/축소 – 마우스 기준 줌
 els.canvas.addEventListener(
@@ -1031,11 +1026,6 @@ function imagePointFromClient(ev) {
     rect: { left: 0, top: 0, width: natW, height: natH },
   };
 }
-function getNodeLabelById(id) {
-  const n = state.graph.nodes.find((nn) => nn.id === id);
-  const name = (n?.name || "").trim();
-  return name ? name : id;
-}
 
 function redrawOverlay() {
   const svg = els.overlay;
@@ -1078,15 +1068,12 @@ function redrawOverlay() {
     );
     poly.setAttribute("points", pointsAttr);
     poly.setAttribute("class", "poly-fill");
-    svg.appendChild(poly);
 
-    // 히트영역(선택용)
-    const h = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-    h.setAttribute("points", pointsAttr);
-    h.setAttribute("class", "hit poly-hit");
-    h.dataset.id = p.id;
-    h.addEventListener("click", () => selectPolygon(p.id));
-    svg.appendChild(h);
+    if (state.selection?.type === "polygon" && state.selection.id === p.id) {
+      poly.classList.add("selected");
+    }
+
+    svg.appendChild(poly);
 
     // 3) 라벨 위치(노드 중심 기준)
     const cx =
@@ -1197,7 +1184,9 @@ function redrawOverlay() {
     c.setAttribute("cy", n.y);
     c.setAttribute("r", 5);
     const isSelectedNode =
-      state.selection?.type === "node" && state.selection.id === n.id;
+      state.tool === "select" &&
+      state.selection?.type === "node" && 
+      state.selection.id === n.id;
 
     const isLinkPending = state.tool === "link" && pendingLinkFrom === n.id;
 
@@ -1617,7 +1606,6 @@ function handleLinkPick(nodeId) {
       b: B.id,
     };
 
-    
     state.graph.links.push(newLink);
     pendingLinkFrom = null;
     pushHistory();
@@ -1725,6 +1713,8 @@ function selectPolygon(id) {
   // 노드/링크 패널 숨기기
   if (els.nodeGroup) els.nodeGroup.style.display = "none";
   if (els.linkGroup) els.linkGroup.style.display = "none";
+
+  redrawOverlay();
 }
 
 if (els.polyName) {
@@ -1797,9 +1787,7 @@ function deleteCurrentSelection() {
     nodes.splice(idx, 1);
 
     // 2) 이 노드를 참조하는 링크들 삭제
-    g.links = (g.links || []).filter(
-      (l) => l.a !== nodeId && l.b !== nodeId
-    );
+    g.links = (g.links || []).filter((l) => l.a !== nodeId && l.b !== nodeId);
 
     // 3) 폴리곤에서 이 노드를 포함하고 있으면 제거
     if (g.polygons) {
@@ -1810,7 +1798,7 @@ function deleteCurrentSelection() {
           return { ...p, nodes: newNodes };
         })
         // 노드가 3개 미만이 되면 폴리곤 자체를 삭제
-        .filter((p) => (p.nodes && p.nodes.length >= 3));
+        .filter((p) => p.nodes && p.nodes.length >= 3);
     }
   } else if (type === "link") {
     g.links = (g.links || []).filter((l) => l.id !== id);
@@ -1825,7 +1813,6 @@ function deleteCurrentSelection() {
 
   pushHistory();
 }
-
 
 function clearSelection() {
   state.selection = { type: null, id: null };
@@ -2066,14 +2053,12 @@ els.overlay.addEventListener("pointermove", (ev) => {
   }
 });
 
-
 // node
 els.overlay.addEventListener(
   "pointerdown",
   (ev) => {
     if (state.tool !== "node") return;
     if (ev.button !== 0) return;
-    if (ev.target !== els.overlay) return;
 
     const now = performance.now();
     if (now - lastNodeDownTs < 200) return; // 디바운스
@@ -2130,7 +2115,7 @@ els.overlay.addEventListener("pointerup", (ev) => {
     state.snapGuide = null;
 
     pushHistory();
-    
+
     try {
       els.overlay.releasePointerCapture(ev.pointerId);
     } catch {}
@@ -2179,10 +2164,9 @@ function finalizePolygon() {
     nodes: [...d.nodes], // 이 폴리곤을 이루는 노드 id 리스트
   };
 
-  
   state.graph.polygons = state.graph.polygons || [];
   state.graph.polygons.push(newPoly);
-  
+
   state.polygonDraft = null;
 
   redrawOverlay();
@@ -2802,7 +2786,7 @@ async function saveToServer() {
   try {
     // 에디터 상태 → data 포맷
     const data = serializeToDataFormat();
-  
+
     // DB에 메타/스케일/시작층도 함께 보관
     data.meta = {
       projectName: getProjectName(),
@@ -2814,9 +2798,9 @@ async function saveToServer() {
     };
     data.scale = Number(state.scale) || Number(els.scale?.value) || 0;
     data.startFloor = state.startFloor ?? 1;
-  
+
     const saved = await apiUpdateProject(state.projectId, data);
-  
+
     state.modified = false;
     els.projState.textContent = "상태: 저장됨";
     els.projState.style.color = "#27ae60";
@@ -2838,7 +2822,6 @@ els.btnSave.addEventListener("click", async () => {
   const ok = await saveToServer();
   if (ok) showToast("저장되었습니다.");
 });
-
 
 // 내보내기
 els.btnExport.addEventListener("click", async () => {

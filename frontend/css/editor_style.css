@@ -248,6 +248,12 @@ input[type="text"] {
   stroke: var(--accent, #007aff);
   stroke-width: 2;
 }
+.poly-fill.selected {
+  fill: rgba(255, 8, 8, 1); /* 살짝 진한 빨간 배경 */
+  stroke: #dc2626;               /* 테두리도 빨강 */
+  stroke-width: 2.2;
+}
+
 .poly-preview {
   fill: none;
   stroke: #007aff;
