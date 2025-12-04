@@ -104,11 +104,19 @@
             <label>현재 층</label>
             <select id="floorSelect" disabled></select>
           </div>
+          <div class="row">
+            <button class="btn" id="btnRenameFloor" disabled>✏️ 층 이름 변경</button>
+          </div>
 
           <!-- 현재 층의 배경 이미지 파일명/상태 표시 -->
           <div class="row">
             <label>배경 이미지</label>
             <span class="pill" id="bgName">이미지 없음</span>
+          </div>
+          <div class="row">
+            <label>투명도</label>
+            <input id="bgOpacity" type="range" min="0" max="100" value="100" disabled />
+            <span class="muted" id="bgOpacityValue">100%</span>
           </div>
 
           <!-- 파일 업로드/제거 버튼 (floor + project 조합으로 서버에 저장) -->
@@ -276,33 +284,8 @@
             <label>노드 이름</label>
           </div>
 
-          <!-- P1 ~ P4까지 4개의 꼭짓점 좌표 -->
-          <div class="poly-vertices">
-            <div class="poly-vertex-row">
-              <span class="pv-label">P1</span>
-              <input id="polyP1X" type="number" class="coord-input" />
-              <input id="polyP1Y" type="number" class="coord-input" />
-              <span id="polyP1Node" class="pv-node mono small"></span>
-            </div>
-            <div class="poly-vertex-row">
-              <span class="pv-label">P2</span>
-              <input id="polyP2X" type="number" class="coord-input" />
-              <input id="polyP2Y" type="number" class="coord-input" />
-              <span id="polyP2Node" class="pv-node mono small"></span>
-            </div>
-            <div class="poly-vertex-row">
-              <span class="pv-label">P3</span>
-              <input id="polyP3X" type="number" class="coord-input" />
-              <input id="polyP3Y" type="number" class="coord-input" />
-              <span id="polyP3Node" class="pv-node mono small"></span>
-            </div>
-            <div class="poly-vertex-row">
-              <span class="pv-label">P4</span>
-              <input id="polyP4X" type="number" class="coord-input" />
-              <input id="polyP4Y" type="number" class="coord-input" />
-              <span id="polyP4Node" class="pv-node mono small"></span>
-            </div>
-          </div>
+          <!-- 동적으로 생성되는 꼭짓점 목록 -->
+          <div class="poly-vertices" id="polyPts"></div>
         </div>
       </div>
 
@@ -372,17 +355,6 @@
             <div class="row">
               <label>층 수</label>
               <input id="floorCount" type="number" min="1" max="12" value="4" />
-            </div>
-            <div class="row">
-              <label>시작 층</label>
-              <!-- 1층~N층 중 시작 층 선택 (JS에서 options 채움) -->
-              <select id="startFloor"></select>
-            </div>
-            <div class="row">
-              <label>스케일</label>
-              <!-- 실제 거리(m) / 픽셀 비율 -->
-              <input id="scale" type="text" value="0.33167" />
-              <span class="muted">m/pixel</span>
             </div>
           </div>
         </div>

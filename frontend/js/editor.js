@@ -135,8 +135,11 @@ const state = {
   // 층 정보
   floors: 4,        // 총 층 수
   startFloor: 0,    // 시작 층 index (0-based, 예: 0=1층)
-  scale: 0.33167,   // m/pixel 스케일
+  scale: 0,         // m/pixel 스케일 (추후 이미지별 설정 예정)
+  floorNames: ["1층", "2층", "3층", "4층"], // 층 표시 이름
   images: [],       // 층별 배경 이미지 URL/경로 목록 (floorIndex -> url)
+  imageLabels: [],  // 층별 이미지 표시 이름
+  bgOpacity: 1,     // 배경 이미지 투명도 (0~1)
   currentFloor: 0,  // 현재 층 index (0-based)
   imageLocked: true, // 배경 이미지 잠금 여부
 
@@ -181,6 +184,19 @@ const state = {
     link: {},   // floor -> max lseq
     polygon: {},// floor -> max pseq
   },
+  visibility: {
+    node: {},   // id -> hidden?
+    link: {},
+    polygon: {},
+  },
+};
+
+const TOOL_KEY_MAP = {
+  "1": "select",
+  "2": "node",
+  "3": "link",
+  "4": "polygon",
+  "5": "compass",
 };
 
 // 마우스 화면 좌표 저장용
@@ -195,6 +211,10 @@ state.history = {
   index: -1,
   max: 50, // 최대 50단계까지 기억
 };
+
+state.floorNames = sanitizeFloorNames(state.floorNames, state.floors);
+state.imageLabels = Array.from({ length: state.floors }, () => "");
+state.bgOpacity = Math.min(1, Math.max(0, Number(state.bgOpacity) || 1));
 
 /**
  * 현재 state에서 Undo/Redo용 스냅샷을 하나 만든다.
@@ -229,6 +249,11 @@ function applySnapshot(snap) {
   state.graph = snap.graph
     ? JSON.parse(JSON.stringify(snap.graph))
     : { nodes: [], links: [], polygons: [] };
+  setCountersFromData({
+    nodes: state.graph.nodes || [],
+    links: state.graph.links || [],
+  });
+  rebuildSeqFromData?.();
 
   // 층
   state.currentFloor =
@@ -399,6 +424,7 @@ const els = {
   btnLoadBg: document.getElementById("btnLoadBg"),
   btnClearBg: document.getElementById("btnClearBg"),
   btnLock: document.getElementById("btnLock"),
+  btnRenameFloor: document.getElementById("btnRenameFloor"),
   bgName: document.getElementById("bgName"),
 
   // 캔버스 / 스테이지 / 배경 이미지 / 빈 상태 / 상태바
@@ -407,6 +433,8 @@ const els = {
   bgImg: document.getElementById("bgImg"),
   empty: document.getElementById("emptyState"),
   status: document.getElementById("status"),
+  bgOpacity: document.getElementById("bgOpacity"),
+  bgOpacityValue: document.getElementById("bgOpacityValue"),
 
   // 우측 프로젝트 정보 영역
   projName: document.getElementById("projName"),
@@ -426,8 +454,6 @@ const els = {
   projectName: document.getElementById("projectName"),
   projectAuthor: document.getElementById("projectAuthor"),
   floorCount: document.getElementById("floorCount"),
-  startFloor: document.getElementById("startFloor"),
-  scale: document.getElementById("scale"),
   floorFiles: document.getElementById("floorFiles"),
   modalOk: document.getElementById("btnModalOk"),
   modalReset: document.getElementById("btnModalReset"),
@@ -458,28 +484,7 @@ const els = {
   polyGroup: document.getElementById("polyGroup"),
   polyId: document.getElementById("polyId"),
   polyName: document.getElementById("polyName"),
-  polyPts: [
-    {
-      x: document.getElementById("polyP1X"),
-      y: document.getElementById("polyP1Y"),
-      node: document.getElementById("polyP1Node"),
-    },
-    {
-      x: document.getElementById("polyP2X"),
-      y: document.getElementById("polyP2Y"),
-      node: document.getElementById("polyP2Node"),
-    },
-    {
-      x: document.getElementById("polyP3X"),
-      y: document.getElementById("polyP3Y"),
-      node: document.getElementById("polyP3Node"),
-    },
-    {
-      x: document.getElementById("polyP4X"),
-      y: document.getElementById("polyP4Y"),
-      node: document.getElementById("polyP4Node"),
-    },
-  ],
+  polyPtsContainer: document.getElementById("polyPts"),
 
   // 방위(나침반) 속성 패널 요소
   compassPanel: document.getElementById("compassPanel"),
@@ -491,11 +496,127 @@ const els = {
   compassInfo: document.getElementById("compassInfo"),
 };
 
-
+const polygonPointRows = [];
 
 // ---------------------------------------
 // ------------- Helpers -----------------
 // ---------------------------------------
+
+function defaultFloorName(idx) {
+  return `${idx + 1}층`;
+}
+
+function sanitizeFloorNames(names, count) {
+  const source = Array.isArray(names) ? names : [];
+  return Array.from({ length: count }, (_, i) => {
+    const raw = source[i];
+    const text = typeof raw === "string" ? raw.trim() : "";
+    return text || defaultFloorName(i);
+  });
+}
+
+function getFloorName(idx) {
+  if (!Array.isArray(state.floorNames)) {
+    state.floorNames = [];
+  }
+  if (!Number.isInteger(idx) || idx < 0) return defaultFloorName(0);
+  const raw = state.floorNames[idx];
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return defaultFloorName(idx);
+}
+
+function extractFileNameFromUrl(url = "") {
+  if (!url || typeof url !== "string") return "";
+  if (url.startsWith("blob:")) return "임시 이미지";
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/");
+    return decodeURIComponent(parts.pop() || "") || parsed.hostname;
+  } catch (_) {
+    const parts = url.split("/");
+    return decodeURIComponent(parts.pop() || "");
+  }
+}
+
+function normalizeImageUrl(raw = "") {
+  if (!raw) return "";
+  if (/^https?:\/\//.test(raw)) {
+    if (raw.includes("127.0.0.1") || raw.includes("localhost")) {
+      try {
+        const u = new URL(raw);
+        return `${API_ORIGIN}${u.pathname}${u.search}${u.hash}`;
+      } catch (_) {
+        return raw;
+      }
+    }
+    return raw;
+  }
+  const path = raw.startsWith("/") ? raw : `/${raw}`;
+  return `${API_ORIGIN}${path}`;
+}
+
+function ensureImageArrays(size) {
+  if (!Array.isArray(state.images)) state.images = [];
+  if (!Array.isArray(state.imageLabels)) state.imageLabels = [];
+  if (state.images.length < size) state.images.length = size;
+  if (state.imageLabels.length < size) state.imageLabels.length = size;
+}
+
+function releaseBlobUrls(list) {
+  if (!Array.isArray(list)) return;
+  list.forEach((url) => {
+    if (url && typeof url === "string" && url.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    }
+  });
+}
+
+function resetImageState(count) {
+  releaseBlobUrls(state.images);
+  state.images = Array.from({ length: count }, () => null);
+  state.imageLabels = Array.from({ length: count }, () => "");
+}
+
+function setFloorImage(floor, url, label) {
+  if (!Number.isInteger(floor) || floor < 0) return;
+  ensureImageArrays(Math.max(state.floors, floor + 1));
+  const prevUrl = state.images[floor];
+  if (prevUrl && prevUrl.startsWith("blob:") && prevUrl !== url) {
+    try {
+      URL.revokeObjectURL(prevUrl);
+    } catch (_) {}
+  }
+  state.images[floor] = url || null;
+  const text =
+    url && typeof label === "string" && label.trim()
+      ? label.trim()
+      : url
+      ? extractFileNameFromUrl(url)
+      : "";
+  state.imageLabels[floor] = text;
+  const pill = document.getElementById("fileName_" + floor);
+  if (pill) pill.textContent = url ? text || "이미지" : "이미지 없음";
+  if (state.loaded && floor === currentFloor()) {
+    renderFloor();
+  }
+}
+
+function updateBgOpacityControls(opacity) {
+  const clamped = Math.min(1, Math.max(0, Number(opacity) || 0));
+  state.bgOpacity = clamped;
+  const percent = Math.round(clamped * 100);
+  if (els.bgOpacity) {
+    els.bgOpacity.value = String(percent);
+  }
+  if (els.bgOpacityValue) {
+    els.bgOpacityValue.textContent = `${percent}%`;
+  }
+  if (els.bgImg) {
+    els.bgImg.style.opacity = clamped;
+  }
+}
 
 /**
  * 에디터 전체 enable/disable
@@ -511,6 +632,8 @@ function setEnabled(enabled) {
     els.btnLoadBg,
     els.btnClearBg,
     els.btnLock,
+    els.bgOpacity,
+    els.btnRenameFloor,
     els.startX,
     els.startY,
     els.btnPickStart,
@@ -552,9 +675,6 @@ function showToast(msg = "저장되었습니다.") {
 function openModal() {
   els.modalBack.style.display = "flex";
 
-  // 층 수 입력 값 기준으로 "시작 층" 옵션 채우기
-  buildStartFloorOptions(parseInt(els.floorCount.value || "1", 10));
-
   // 층별 배경 이미지 업로드 행들 렌더링
   buildFloorFileRows();
 }
@@ -567,32 +687,34 @@ function closeModal() {
 
 
 /**
- * 새 프로젝트 모달 안의 "시작 층" 셀렉트 박스를
- * 층 수(n)에 맞게 1층~n층 옵션으로 채워준다.
- */
-function buildStartFloorOptions(n) {
-  // 기존 옵션 비우기
-  els.startFloor.innerHTML = "";
-
-  // 0-based index, 화면에는 "1층", "2층" 식으로 표시
-  for (let i = 0; i < n; i++) {
-    const o = document.createElement("option");
-    o.value = i;             // 실제 값은 index (0,1,2,...)
-    o.textContent = i + 1 + "층";
-    els.startFloor.appendChild(o);
-  }
-}
-
-
-/**
  * 새 프로젝트 모달 안의 "층별 도면 이미지 업로드" 행들을 만든다.
  *
  * - floorCount 입력 박스의 값(n)을 읽어서
  *   n층까지 반복하며 아래 구조의 DOM을 만든다:
  *   [ 층라벨 | 파일 이름 pill | 선택 버튼 | 제거 버튼 | 숨겨진 file input ]
  */
-function buildFloorFileRows() {
+function getModalFloorNameValues() {
+  const map = {};
+  if (!els.floorFiles) return map;
+  const inputs = els.floorFiles.querySelectorAll(".floor-name-input");
+  inputs.forEach((input) => {
+    const idx = Number(input.dataset.floor);
+    if (!Number.isNaN(idx)) {
+      map[idx] = input.value || "";
+    }
+  });
+  return map;
+}
+
+function readFloorNamesFromModal(count) {
+  const map = getModalFloorNameValues();
+  const arr = Array.from({ length: count }, (_, i) => map[i]);
+  return sanitizeFloorNames(arr, count);
+}
+
+function buildFloorFileRows(preserveNames = true) {
   const n = parseInt(els.floorCount.value || "1", 10);
+  const prevNames = preserveNames ? getModalFloorNameValues() : {};
 
   // 이전 행들 제거
   els.floorFiles.innerHTML = "";
@@ -601,15 +723,38 @@ function buildFloorFileRows() {
     const row = document.createElement("div");
     row.className = "floor-grid";
 
-    // "1층", "2층" 라벨
+    // 층 라벨 + 이름 입력
     const label = document.createElement("div");
-    label.textContent = i + 1 + "층";
+    const labelTitle = document.createElement("div");
+    // labelTitle.textContent = `${i + 1}층`;
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "floor-name-input";
+    nameInput.id = `floorNameInput_${i}`;
+    nameInput.dataset.floor = String(i);
+    nameInput.placeholder = "예: B1";
+    nameInput.maxLength = 12;
+    let initialName = defaultFloorName(i);
+    if (preserveNames) {
+      const stateName =
+        Array.isArray(state.floorNames) && state.floorNames[i]
+          ? state.floorNames[i]
+          : null;
+      initialName = prevNames[i] ?? stateName ?? initialName;
+    }
+    nameInput.value = initialName;
+    label.appendChild(labelTitle);
+    label.appendChild(nameInput);
 
     // 파일 이름 표시 pill
     const name = document.createElement("div");
     name.id = "fileName_" + i;
     name.className = "pill";
-    name.textContent = "이미지 없음";
+    const existingLabel =
+      preserveNames && Array.isArray(state.imageLabels)
+        ? state.imageLabels[i]
+        : "";
+    name.textContent = existingLabel || "이미지 없음";
 
     // "선택" 버튼 (file input 클릭을 대신해줌)
     const sel = document.createElement("button");
@@ -635,34 +780,17 @@ function buildFloorFileRows() {
 
     // 파일이 선택되면
     input.onchange = () => {
-      if (input.files[0]) {
-        // 브라우저 메모리 상 가짜 URL 생성 (미리보기용)
-        const url = URL.createObjectURL(input.files[0]);
-
-        // state.images에 현재 층 인덱스로 저장
-        state.images[i] = url;
-
-        // 파일 이름 pill 업데이트
-        name.textContent = input.files[0].name;
-
-        // 이미 프로젝트가 로드된 상태이고,
-        // 현재 보고 있는 층이면 바로 배경도 새로 그려줌
-        if (state.loaded && state.currentFloor === i) renderFloor();
+      const file = input.files?.[0];
+      if (file) {
+        const url = URL.createObjectURL(file);
+        setFloorImage(i, url, file.name);
       }
     };
 
     // "제거" 버튼 → 해당 층 배경 이미지 제거
     rem.onclick = () => {
       if (state.images[i]) {
-        // object URL 회수 (메모리 누수 방지)
-        URL.revokeObjectURL(state.images[i]);
-        delete state.images[i];
-        name.textContent = "이미지 없음";
-
-        // 현재 층이었다면 배경 다시 렌더링
-        if (state.loaded && state.currentFloor === i) {
-          renderFloor();
-        }
+        setFloorImage(i, null);
       }
     };
 
@@ -680,16 +808,23 @@ function buildFloorFileRows() {
 function renderFloor() {
   const f = currentFloor();
   const url = state.images?.[f] || "";
+  updateBgOpacityControls(state.bgOpacity ?? 1);
 
   if (url) {
     // 배경 이미지 표시
     els.bgImg.src = url;
     els.bgImg.style.display = "block";
 
-    // 모달에서 해당 층 파일 이름 pill을 찾아와서 표시
-    els.bgName.textContent =
+    const labelFromState = state.imageLabels?.[f];
+    const labelFromModal =
       els.floorFiles.querySelector("#fileName_" + state.currentFloor)
-        ?.textContent || "이미지";
+        ?.textContent || "";
+    const finalLabel =
+      labelFromState?.trim() ||
+      labelFromModal?.trim() ||
+      extractFileNameFromUrl(url) ||
+      "이미지";
+    els.bgName.textContent = finalLabel;
   } else {
     // 배경 이미지 없음
     els.bgImg.removeAttribute("src");
@@ -698,7 +833,7 @@ function renderFloor() {
   }
 
   // 상단 층 라벨 (🏢 층: 1, 2, ...)
-  els.floorLbl.textContent = "🏢 층: " + (state.currentFloor + 1);
+  els.floorLbl.textContent = "🏢 층: " + getFloorName(state.currentFloor);
 
   // 선택 라벨 초기화
   els.selLbl.textContent = " ";
@@ -712,6 +847,18 @@ function renderFloor() {
 function currentFloor() {
   // (레거시 호환) state.currentfloor 사용 중이면 그 값을 우선
   return Number(state.currentFloor ?? state.currentfloor ?? 0);
+}
+
+function setFloor(nextFloor) {
+  if (!Number.isInteger(nextFloor)) return;
+  state.currentFloor = nextFloor;
+  state.currentfloor = nextFloor;
+  if (els.floorSelect) {
+    els.floorSelect.value = String(nextFloor);
+  }
+  renderFloor?.();
+  redrawOverlay?.();
+  updateLayersPanel?.();
 }
 
 /**
@@ -833,6 +980,150 @@ function findNearestNodeForPoint(floor, pt, maxDist = 20) {
   return best;
 }
 
+function clearPolygonPointRows() {
+  polygonPointRows.length = 0;
+  if (els.polyPtsContainer) {
+    els.polyPtsContainer.innerHTML = "";
+  }
+}
+
+function handlePolygonPointInput(idx) {
+  const row = polygonPointRows[idx];
+  if (!row) return;
+  if (state.selection?.type !== "polygon") return;
+  const poly = (state.graph.polygons || []).find(
+    (x) => x.id === state.selection.id
+  );
+  if (!poly) return;
+
+  const xVal = Number(row.x.value);
+  const yVal = Number(row.y.value);
+  if (!Number.isFinite(xVal) || !Number.isFinite(yVal)) return;
+
+  const floor = Number(poly.floor ?? currentFloor());
+  const nearest = findNearestNodeForPoint(floor, { x: xVal, y: yVal });
+  if (nearest) {
+    poly.nodes = poly.nodes || [];
+    poly.nodes[idx] = nearest.id;
+    row.x.value = Math.round(nearest.x);
+    row.y.value = Math.round(nearest.y);
+    row.node.textContent = nodeLabel(nearest);
+    redrawOverlay();
+  }
+}
+
+function syncPolygonPointRows(p) {
+  if (!p) return;
+  const nodes = p.nodes || [];
+  const floor = Number(p.floor ?? currentFloor());
+  polygonPointRows.forEach((row, idx) => {
+    const nodeId = nodes[idx];
+    const n = nodeId ? getNodeById(nodeId) : null;
+    if (n && Number(n.floor ?? 0) === floor) {
+      row.x.value = Math.round(n.x);
+      row.y.value = Math.round(n.y);
+      row.node.textContent = nodeLabel(n);
+    } else {
+      row.x.value = "";
+      row.y.value = "";
+      row.node.textContent = "";
+    }
+  });
+}
+
+function renderPolygonPointRows(p) {
+  clearPolygonPointRows();
+  if (!els.polyPtsContainer) return;
+  if (!p || !Array.isArray(p.nodes) || p.nodes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "노드가 없습니다.";
+    els.polyPtsContainer.appendChild(empty);
+    return;
+  }
+
+  p.nodes.forEach((_, idx) => {
+    const row = document.createElement("div");
+    row.className = "poly-vertex-row";
+
+    const label = document.createElement("span");
+    label.className = "pv-label";
+    label.textContent = `P${idx + 1}`;
+
+    const xInput = document.createElement("input");
+    xInput.type = "number";
+    xInput.className = "coord-input";
+
+    const yInput = document.createElement("input");
+    yInput.type = "number";
+    yInput.className = "coord-input";
+
+    const nodeSpan = document.createElement("span");
+    nodeSpan.className = "pv-node mono small";
+
+    const onChange = () => handlePolygonPointInput(idx);
+    xInput.addEventListener("change", onChange);
+    yInput.addEventListener("change", onChange);
+
+    row.append(label, xInput, yInput, nodeSpan);
+    els.polyPtsContainer.appendChild(row);
+
+    polygonPointRows[idx] = { x: xInput, y: yInput, node: nodeSpan };
+  });
+
+  syncPolygonPointRows(p);
+}
+
+function distancePointToSegment(px, py, x1, y1, x2, y2) {
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+  const len2 = vx * vx + vy * vy || 1;
+  const tRaw = ((px - x1) * vx + (py - y1) * vy) / len2;
+  const t = Math.max(0, Math.min(1, tRaw));
+  const projX = x1 + vx * t;
+  const projY = y1 + vy * t;
+  const dx = px - projX;
+  const dy = py - projY;
+  return { dist: Math.hypot(dx, dy), t, projX, projY };
+}
+
+function maybeSplitLinkAtNode(node, tolerance = 6) {
+  if (!node || !Array.isArray(state.graph.links)) return false;
+  const floor = Number(node.floor ?? 0);
+  for (let i = 0; i < state.graph.links.length; i++) {
+    const link = state.graph.links[i];
+    if (Number(link.floor ?? floor) !== floor) continue;
+    const A = getNodeById(link.a);
+    const B = getNodeById(link.b);
+    if (!A || !B) continue;
+    const res = distancePointToSegment(node.x, node.y, A.x, A.y, B.x, B.y);
+    if (res.dist > tolerance) continue;
+    if (res.t <= 0.05 || res.t >= 0.95) continue;
+
+    // remove original link
+    state.graph.links.splice(i, 1);
+    i--;
+
+    const first = {
+      id: nextLinkId(),
+      floor,
+      lseq: nextLinkSeq(floor),
+      a: A.id,
+      b: node.id,
+    };
+    const second = {
+      id: nextLinkId(),
+      floor,
+      lseq: nextLinkSeq(floor),
+      a: node.id,
+      b: B.id,
+    };
+    state.graph.links.push(first, second);
+    return true;
+  }
+  return false;
+}
+
 
 /**
  * 우측 "폴리곤 속성" 패널을 현재 선택된 폴리곤 p 기준으로 갱신
@@ -845,6 +1136,7 @@ function refreshPolygonPanel(p) {
   // 선택된 폴리곤이 없으면 패널 숨김
   if (!p) {
     els.polyGroup.style.display = "none";
+    clearPolygonPointRows();
     return;
   }
   els.polyGroup.style.display = "";
@@ -857,25 +1149,26 @@ function refreshPolygonPanel(p) {
   const floor = Number(p.floor ?? currentFloor());
   const nodes = p.nodes || [];
 
-  // 폴리곤 UI용 4개 꼭짓점 입력(polyPts)에
-  // 실제 노드 좌표/이름을 채워넣기
-  for (let i = 0; i < els.polyPts.length; i++) {
-    const ui = els.polyPts[i];
-    const nodeId = nodes[i];
-    const n = nodeId ? getNodeById(nodeId) : null;
+  renderPolygonPointRows(p);
+}
 
-    if (!n || Number(n.floor ?? 0) !== floor) {
-      // 해당하는 노드가 없거나, 층이 다르면 비워둔다
-      ui.x.value = "";
-      ui.y.value = "";
-      ui.node.textContent = "";
-      continue;
-    }
+function isElementHidden(type, id) {
+  const group = state.visibility?.[type];
+  if (!group) return false;
+  return !!group[id];
+}
 
-    ui.x.value = Math.round(n.x);
-    ui.y.value = Math.round(n.y);
-    ui.node.textContent = nodeLabel(n);
+function setElementHidden(type, id, hidden) {
+  state.visibility = state.visibility || { node: {}, link: {}, polygon: {} };
+  const group = state.visibility[type];
+  if (!group) return;
+  if (hidden) {
+    group[id] = true;
+  } else {
+    delete group[id];
   }
+  redrawOverlay();
+  updateLayersPanel?.();
 }
 
 
@@ -1063,7 +1356,7 @@ function populateFloorSelect() {
   for (let i = 0; i < state.floors; i++) {
     const o = document.createElement("option");
     o.value = i;
-    o.textContent = i + 1 + "층";
+    o.textContent = getFloorName(i);
     els.floorSelect.appendChild(o);
   }
 
@@ -1163,31 +1456,28 @@ function populateCompassNodeSelects() {
  */
 function collectSnapAnchors() {
   const a = [];
+  const floor = Number(currentFloor());
+  const sameFloor = (value) => Number(value ?? 0) === floor;
 
-  // 1) 노드
-  for (const n of state.graph.nodes) a.push({ x: n.x, y: n.y });
+  // 1) 노드 (현재 층만)
+  for (const n of state.graph.nodes || []) {
+    if (sameFloor(n.floor)) a.push({ x: n.x, y: n.y });
+  }
 
-  // 2) 링크 끝점 (각 링크의 A,B 노드 좌표)
+  // 2) 링크 끝점 (현재 층 노드만)
   for (const l of state.graph.links || []) {
     const A = state.graph.nodes.find((n) => n.id === l.a);
     const B = state.graph.nodes.find((n) => n.id === l.b);
-    if (A) a.push({ x: A.x, y: A.y });
-    if (B) a.push({ x: B.x, y: B.y });
+    if (A && sameFloor(A.floor)) a.push({ x: A.x, y: A.y });
+    if (B && sameFloor(B.floor)) a.push({ x: B.x, y: B.y });
   }
 
-  // 3) 사각형/폴리곤 꼭짓점
-  // for (const r of state.graph.rects || []) {
-  //   a.push({ x: r.x, y: r.y });
-  //   a.push({ x: r.x + r.w, y: r.y });
-  //   a.push({ x: r.x, y: r.y + r.h });
-  //   a.push({ x: r.x + r.w, y: r.y + r.h });
-  // }
-
-  // 4) 폴리곤에 연결된 노드 좌표
+  // 4) 폴리곤에 연결된 노드 좌표 (현재 층만)
   for (const p of state.graph.polygons || []) {
+    if (!sameFloor(p.floor)) continue;
     for (const nid of p.nodes || []) {
       const n = getNodeById(nid);
-      if (n) a.push({ x: n.x, y: n.y });
+      if (n && sameFloor(n.floor)) a.push({ x: n.x, y: n.y });
     }
   }
   return a;
@@ -1344,9 +1634,10 @@ window.addEventListener(
  */
 window.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
+  const isEditable = tag === "input" || tag === "textarea";
 
   // input / textarea 에서는 기본 동작 유지 (커서 이동, 텍스트 삭제 등)
-  if (tag === "input" || tag === "textarea") {
+  if (isEditable) {
     // 단, Ctrl+Z / Y 는 막고 에디터 전역 Undo/Redo로 돌리고 싶다면
     // 여기서 예외 처리할 수도 있음
   }
@@ -1386,8 +1677,7 @@ window.addEventListener("keydown", (e) => {
     !e.ctrlKey &&
     !e.metaKey
   ) {
-    const tag = (e.target.tagName || "").toLowerCase();
-    if (tag === "input" || tag === "textarea") return; // 텍스트 삭제는 그대로 두기
+    if (isEditable) return; // 텍스트 삭제는 그대로 두기
     e.preventDefault();
     deleteCurrentSelection();
   }
@@ -1396,6 +1686,16 @@ window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && ["=", "+", "-", "_"].includes(e.key)) {
     e.preventDefault();
   }
+
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && !isEditable) {
+    const mappedTool = TOOL_KEY_MAP[e.key];
+    if (mappedTool) {
+      e.preventDefault();
+      setTool(mappedTool);
+      return;
+    }
+  }
+
   if (state.tool !== "polygon") return;
   if (e.key === "Enter" && state.polygonDraft) {
     finalizePolygon();
@@ -1567,11 +1867,11 @@ function imagePointFromClient(ev) {
 
 
 // ---------------------------------------------------------------------------
-// SVG overlay 전체를 다시 그리기 (노드/링크/폴리곤 등)
+// SVG overlay 전체 그리기 (노드/링크/폴리곤 등)
 // ---------------------------------------------------------------------------
 
 /**
- * overlay SVG 전체를 다시 그리는 함수
+ * overlay SVG 전체 그리는 함수
  *
  * 그리는 순서:
  *  1) SVG 크기/좌표계 설정 (배경 이미지 크기에 맞춤)
@@ -1616,6 +1916,7 @@ function redrawOverlay() {
 
   for (const p of currentFloorPolygons) {
     if (Number(p.floor ?? 0) !== floor) continue;
+    if (isElementHidden("polygon", p.id)) continue;
 
     // 1) 이 폴리곤이 참조하는 노드들 가져오기
     //    - p.nodes 는 노드 id 배열
@@ -1631,6 +1932,10 @@ function redrawOverlay() {
     const pointsAttr = nodesForPoly.map((pt) => `${pt.x},${pt.y}`).join(" ");
 
     // 채움용 polygon 엘리먼트 생성
+    const group = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "g"
+    );
     const poly = document.createElementNS(
       "http://www.w3.org/2000/svg",
       "polygon"
@@ -1643,7 +1948,22 @@ function redrawOverlay() {
       poly.classList.add("selected");
     }
 
-    svg.appendChild(poly);
+    const hit = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "polygon"
+    );
+    hit.setAttribute("points", pointsAttr);
+    hit.setAttribute("class", "poly-hit");
+    hit.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (state.tool !== "select") return;
+        e.preventDefault();
+        e.stopPropagation();
+        selectPolygon(p.id);
+      },
+      { passive: false }
+    );
 
     // 3) 폴리곤 라벨 위치 (모든 꼭짓점의 중심점)
     const cx =
@@ -1658,7 +1978,10 @@ function redrawOverlay() {
 
     // 이름이 있으면 이름, 없으면 "PG_시퀀스" 형태
     lbl.textContent = p.name || `PG_${p.pseq}`;
-    svg.appendChild(lbl);
+    group.appendChild(poly);
+    group.appendChild(hit);
+    group.appendChild(lbl);
+    svg.appendChild(group);
   }
 
   // -------------------------------------------------------------------------
@@ -1710,6 +2033,7 @@ function redrawOverlay() {
   // -------------------------------------------------------------------------
   const currentFloorLinks = linksOnFloor(floor);
   for (const lk of currentFloorLinks) {
+    if (isElementHidden("link", lk.id)) continue;
     const a = state.graph.nodes.find((n) => n.id === lk.a);
     const b = state.graph.nodes.find((n) => n.id === lk.b);
     if (!a || !b) continue;
@@ -1767,6 +2091,7 @@ function redrawOverlay() {
   // -------------------------------------------------------------------------
   const currentFloorNodes = nodesOnFloor(floor);
   for (const n of currentFloorNodes) {
+    if (isElementHidden("node", n.id)) continue;
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("cx", n.x);
     c.setAttribute("cy", n.y);
@@ -2042,6 +2367,23 @@ function updateLayersPanel() {
   if (!box) return;
   box.innerHTML = "";
 
+  function createLayerEye(type, id, li) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "layer-eye";
+    const hidden = isElementHidden(type, id);
+    btn.textContent = hidden ? "🙈" : "👁";
+    btn.title = hidden ? "보이기" : "숨기기";
+    if (li) li.classList.toggle("is-hidden", hidden);
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = !isElementHidden(type, id);
+      setElementHidden(type, id, next);
+    });
+    return btn;
+  }
+
   function activateItem(li) {
     box
       .querySelectorAll(".layer-item.active")
@@ -2061,10 +2403,12 @@ function updateLayersPanel() {
     // 왼쪽 아이콘 + 라벨
     const left = document.createElement("div");
     left.className = "layer-left";
-    left.innerHTML = `
-      <span class="dot"></span>
-      <span class="label">🔵 ${nodeLabel(n)}</span>
-    `;
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = `🔵 ${nodeLabel(n)}`;
+    left.append(dot, label);
 
     // 클릭하면 기존 selectNode 호출 → 오른쪽 속성 패널 갱신
     li.addEventListener("click", (e) => {
@@ -2081,8 +2425,13 @@ function updateLayersPanel() {
     right.className = "layer-right";
     right.textContent = `(${Math.round(n.x)}, ${Math.round(n.y)})`;
 
+    const meta = document.createElement("div");
+    meta.className = "layer-meta";
+    meta.appendChild(createLayerEye("node", n.id, li));
+    meta.appendChild(right);
+
     li.appendChild(left);
-    li.appendChild(right);
+    li.appendChild(meta);
     box.appendChild(li);
   }
 
@@ -2097,10 +2446,12 @@ function updateLayersPanel() {
 
     const left = document.createElement("div");
     left.className = "layer-left";
-    left.innerHTML = `
-      <span class="icon-link"></span>
-      <span class="label">🔗 ${linkLabel(l)}</span>
-    `;
+    const icon = document.createElement("span");
+    icon.className = "icon-link";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = `🔗 ${linkLabel(l)}`;
+    left.append(icon, label);
 
     // 클릭하면 기존 selectLink 호출 → 속성 패널 갱신
     li.addEventListener("click", (e) => {
@@ -2116,8 +2467,13 @@ function updateLayersPanel() {
     right.className = "layer-right mono small";
     right.textContent = linkEndpointsLabel(l, nodesF);
 
+    const meta = document.createElement("div");
+    meta.className = "layer-meta";
+    meta.appendChild(createLayerEye("link", l.id, li));
+    meta.appendChild(right);
+
     li.appendChild(left);
-    li.appendChild(right);
+    li.appendChild(meta);
     box.appendChild(li);
   }
 
@@ -2132,10 +2488,12 @@ function updateLayersPanel() {
 
     const left = document.createElement("div");
     left.className = "layer-left";
-    left.innerHTML = `
-    <span class="icon-poly"></span>
-    <span class="label">⬛ ${p.name || `PG_${p.pseq ?? ""}`}</span>
-  `;
+    const icon = document.createElement("span");
+    icon.className = "icon-poly";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = `⬛ ${p.name || `PG_${p.pseq ?? ""}`}`;
+    left.append(icon, label);
 
     li.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2150,8 +2508,13 @@ function updateLayersPanel() {
     right.className = "layer-right mono small";
     right.textContent = `${(p.nodes || []).length} pts`;
 
+    const meta = document.createElement("div");
+    meta.className = "layer-meta";
+    meta.appendChild(createLayerEye("polygon", p.id, li));
+    meta.appendChild(right);
+
     li.appendChild(left);
-    li.appendChild(right);
+    li.appendChild(meta);
     box.appendChild(li);
   }
 
@@ -2356,6 +2719,7 @@ function selectLink(id) {
 function selectPolygon(id) {
   const p = (state.graph.polygons || []).find((x) => x.id === id);
   if (!p) return;
+  p.nodes = normalizePolygonNodes(p.nodes || []);
 
   const f = Number(p.floor ?? 0);
   if (currentFloor() !== f) setFloor(f);
@@ -2382,46 +2746,6 @@ if (els.polyName) {
     if (!p) return;
     p.name = els.polyName.value.trim();
     redrawOverlay();
-  });
-}
-
-if (els.polyPts) {
-  els.polyPts.forEach((ui, idx) => {
-    if (!ui) return;
-
-    function updatePointFromInputs() {
-      if (state.selection?.type !== "polygon") return;
-      const p = (state.graph.polygons || []).find(
-        (x) => x.id === state.selection.id
-      );
-      if (!p) return;
-
-      const xVal = Number(ui.x.value);
-      const yVal = Number(ui.y.value);
-      if (!Number.isFinite(xVal) || !Number.isFinite(yVal)) return;
-
-      const floor = Number(p.floor ?? currentFloor());
-      const nearest = findNearestNodeForPoint(floor, { x: xVal, y: yVal });
-
-      if (nearest) {
-        // 실제 데이터에는 "좌표"가 아니라 "노드 id"를 저장
-        p.nodes = p.nodes || [];
-        p.nodes[idx] = nearest.id;
-        ui.node.textContent = nodeLabel(nearest);
-        // 좌표칸은 다시 노드 실제 좌표로 맞춰준다
-        ui.x.value = Math.round(nearest.x);
-        ui.y.value = Math.round(nearest.y);
-      } else {
-        // 근처에 노드가 없으면 매칭 해제
-        if (Array.isArray(p.nodes)) p.nodes[idx] = null;
-        ui.node.textContent = "";
-      }
-
-      redrawOverlay();
-    }
-
-    ui.x.addEventListener("change", updatePointFromInputs);
-    ui.y.addEventListener("change", updatePointFromInputs);
   });
 }
 
@@ -2476,6 +2800,7 @@ function clearSelection() {
   els.nodeGroup.style.display = "none";
   els.linkGroup.style.display = "none";
   els.polyGroup.style.display = "none";
+  clearPolygonPointRows();
   redrawOverlay();
 }
 
@@ -2483,17 +2808,13 @@ function clearSelection() {
 els.btnNew.addEventListener("click", openModal);
 els.closeModal.addEventListener("click", closeModal);
 els.floorCount.addEventListener("input", () => {
-  buildStartFloorOptions(parseInt(els.floorCount.value || "1", 10));
   buildFloorFileRows();
 });
 
 els.modalReset.addEventListener("click", () => {
   // els.mode.value = "monte";
   els.floorCount.value = 4;
-  els.scale.value = "0.33167";
-  buildStartFloorOptions(4);
-  els.startFloor.value = "0";
-  buildFloorFileRows();
+  buildFloorFileRows(false);
 });
 
 // ✅ 모달 확인 → 새 프로젝트 생성 + DB 저장
@@ -2507,14 +2828,15 @@ els.modalOk.addEventListener("click", async () => {
       1,
       Math.min(12, parseInt(els.floorCount.value || "1", 10))
     );
-    const startFloor = parseInt(els.startFloor.value || "1", 10);
-    const scale = parseFloat(els.scale.value || "0.33167") || 0.33167;
+    const startFloor = 0;
+    const scale = 0;
     const projectName = (els.projectName.value || "새 프로젝트").trim();
     const projectAuthor = (els.projectAuthor?.value || "").trim();
+    const floorNames = readFloorNamesFromModal(floors);
 
     // 2) 포맷 payload (최소 필드)
     const payload = {
-      meta: { projectName, projectAuthor },
+      meta: { projectName, projectAuthor, floorNames, bgOpacity: 1 },
       scale,
       nodes: {}, // 에디터 로직에 맞춰 객체 or 배열 사용
       connections: {},
@@ -2522,6 +2844,13 @@ els.modalOk.addEventListener("click", async () => {
       north_reference: null, // 북방위 기능 붙이면 {from_node,to_node,azimuth}
       images: Array.from({ length: floors }, () => null),
       startFloor,
+      _editor: {
+        floors,
+        startFloor,
+        currentFloor: startFloor,
+        bgOpacity: 1,
+        floorNames,
+      },
     };
 
     // saved = { id, ...payload }
@@ -2535,6 +2864,9 @@ els.modalOk.addEventListener("click", async () => {
     state.startFloor = startFloor;
     state.scale = scale;
     state.currentFloor = startFloor;
+    state.floorNames = floorNames;
+    resetImageState(floors);
+    state.bgOpacity = 1;
     state.graph = { nodes: [], links: [], polygons: [] }; // 네 기존 편집 상태 초기화 유지
     state.seq.poly = state.seq?.poly || {};
 
@@ -2560,25 +2892,10 @@ els.modalOk.addEventListener("click", async () => {
           floor,
           file,
         }).then((json) => {
-          let url = json.url;
-          if (!url) return;
-          
-          // 절대 URL인 경우
-          if (url.startsWith("http")) {
-            // 127.0.0.1이나 localhost를 포함하는 경우 API_ORIGIN으로 교체
-            if (url.includes("127.0.0.1") || url.includes("localhost")) {
-              try {
-                const urlObj = new URL(url);
-                url = `${API_ORIGIN}${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
-              } catch (e) {
-                // URL 파싱 실패 시 원본 사용
-              }
-            }
-          } else {
-            // 상대 경로인 경우
-            url = `${API_ORIGIN}${url.startsWith("/") ? url : "/" + url}`;
-          }
-          state.images[floor] = url; // ← 0-기반 배열에 정확히 매핑
+          if (!json?.url) return;
+          const abs = normalizeImageUrl(json.url);
+          const fileName = file?.name || state.imageLabels?.[floor] || "";
+          setFloorImage(floor, abs, fileName);
         });
       })
     );
@@ -2606,39 +2923,67 @@ els.modalOk.addEventListener("click", async () => {
   }
 });
 
-els.floorSelect.addEventListener("change", (e) => {
-  state.currentFloor = Number(els.floorSelect.value);
-  state.currentfloor = state.currentFloor; // 혼용 방지
-
-  // 배경
-  renderFloor();
-
-  // 현재층 도형 렌더
-  redrawOverlay();
-
-  // 패널 현재층 기준 변경
-  updateLayersPanel();
+els.floorSelect.addEventListener("change", () => {
+  const next = Number(els.floorSelect.value);
+  setFloor(next);
 });
 
 els.btnLoadBg.addEventListener("click", () => {
+  if (!state.loaded || !state.projectId) {
+    alert("프로젝트를 먼저 불러오거나 저장해 주세요.");
+    return;
+  }
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/*";
-  input.onchange = () => {
-    if (input.files[0]) {
-      const url = URL.createObjectURL(input.files[0]);
-      state.images[state.currentFloor] = url;
-      renderFloor();
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const floor = currentFloor();
+    const prevUrl = state.images?.[floor] || null;
+    const prevLabel = state.imageLabels?.[floor] || "";
+    const tempUrl = URL.createObjectURL(file);
+    setFloorImage(floor, tempUrl, file.name);
+    els.status.textContent = "배경 이미지 업로드 중...";
+    try {
+      const json = await apiUploadFloorImage({
+        project: state.projectId,
+        floor,
+        file,
+      });
+      if (!json?.url) throw new Error("no url");
+      const normalized = normalizeImageUrl(json.url);
+      setFloorImage(floor, normalized, file.name);
+      els.status.textContent = `${getFloorName(floor)} 이미지 업로드 완료`;
+      showToast("배경 이미지가 저장되었습니다.");
+    } catch (err) {
+      console.error(err);
+      alert("이미지 업로드에 실패했습니다. 콘솔을 확인해 주세요.");
+      setFloorImage(floor, prevUrl, prevLabel);
+      els.status.textContent = "배경 이미지 업로드 실패";
     }
   };
   input.click();
 });
 
-els.btnClearBg.addEventListener("click", () => {
-  if (state.images[state.currentFloor]) {
-    URL.revokeObjectURL(state.images[state.currentFloor]);
-    delete state.images[state.currentFloor];
-    renderFloor();
+els.btnClearBg.addEventListener("click", async () => {
+  const floor = currentFloor();
+  if (!state.images?.[floor]) return;
+  const prevUrl = state.images[floor];
+  const prevLabel = state.imageLabels?.[floor] || "";
+  setFloorImage(floor, null);
+  els.status.textContent = `${getFloorName(floor)} 이미지가 제거되었습니다.`;
+  if (state.projectId) {
+    try {
+      await apiUpdateProject(state.projectId, { images: state.images });
+      els.status.textContent = `${getFloorName(
+        floor
+      )} 이미지 삭제가 서버에 반영되었습니다.`;
+    } catch (err) {
+      console.error("이미지 삭제 반영 실패", err);
+      els.status.textContent = "이미지 삭제 반영 실패";
+      setFloorImage(floor, prevUrl, prevLabel);
+    }
   }
 });
 
@@ -2647,6 +2992,40 @@ els.btnLock.addEventListener("click", () => {
   els.btnLock.textContent = state.imageLocked
     ? "🔒 이미지 고정"
     : "🔓 이미지 고정 해제";
+});
+
+els.bgOpacity?.addEventListener("input", () => {
+  const percent = parseInt(els.bgOpacity.value || "100", 10);
+  updateBgOpacityControls(percent / 100);
+  if (state.loaded) {
+    state.modified = true;
+    els.projState.textContent = "상태: 수정됨";
+    els.projState.style.color = "#e67e22";
+  }
+});
+
+els.btnRenameFloor?.addEventListener("click", () => {
+  if (!state.loaded) return;
+  const idx = currentFloor();
+  const currentName = getFloorName(idx);
+  const next = prompt("새 층 이름을 입력하세요.", currentName);
+  if (next == null) return;
+  const trimmed = next.trim();
+  if (!trimmed) {
+    alert("층 이름을 비워둘 수 없습니다.");
+    return;
+  }
+  const names = sanitizeFloorNames(state.floorNames, state.floors);
+  names[idx] = trimmed;
+  state.floorNames = sanitizeFloorNames(names, state.floors);
+  state.modified = true;
+  if (els.projState) {
+    els.projState.textContent = "상태: 수정됨";
+    els.projState.style.color = "#e67e22";
+  }
+  populateFloorSelect();
+  els.floorSelect.value = String(state.currentFloor);
+  renderFloor();
 });
 
 // 시작점 찍기 (V0: 좌표만 기록)
@@ -2677,7 +3056,6 @@ if (els.btnPickStart) {
 // 초기 상태: 편집 비활성
 setEnabled(false);
 // 모달 초기 옵션
-buildStartFloorOptions(4);
 buildFloorFileRows();
 
 // 마우스 이동 시 현재 좌표 갱신 (링크 미리보기/드래그에서 사용)
@@ -2764,11 +3142,15 @@ els.overlay.addEventListener(
 
     // 실제로 그래프가 바뀌기 직전에 스냅샷
     state.graph.nodes.push(newNode);
+    const didSplit = maybeSplitLinkAtNode(newNode);
 
     pushHistory();
 
     selectNode(newNode.id);
     redrawOverlay();
+    if (didSplit && els.status) {
+      els.status.textContent = "노드가 링크를 분할했습니다.";
+    }
 
     // 👉 뒤따르는 click을 한 번 무시
     suppressNextClick = true;
@@ -2807,11 +3189,30 @@ function addVertexToPolygonDraft(nodeId) {
   } else {
     // 다른 층 노드는 무시
     if (Number(state.polygonDraft.floor) !== f) return;
+    const last = state.polygonDraft.nodes?.[state.polygonDraft.nodes.length - 1];
+    if (last === nodeId) return;
     // 같은 노드를 여러 번 찍을지 여부는 정책에 따라
     state.polygonDraft.nodes.push(nodeId);
   }
 
   redrawOverlay();
+}
+
+function normalizePolygonNodes(nodes = []) {
+  const cleaned = [];
+  for (const nid of nodes) {
+    if (!nid) continue;
+    if (!cleaned.length || cleaned[cleaned.length - 1] !== nid) {
+      cleaned.push(nid);
+    }
+  }
+  if (
+    cleaned.length > 2 &&
+    cleaned[0] === cleaned[cleaned.length - 1]
+  ) {
+    cleaned.pop();
+  }
+  return cleaned;
 }
 
 function finalizePolygon() {
@@ -2827,12 +3228,19 @@ function finalizePolygon() {
   state.seq.polygon = state.seq.polygon || {};
   state.seq.polygon[f] = (state.seq.polygon[f] ?? 0) + 1;
 
+  const cleanedNodes = normalizePolygonNodes(d.nodes);
+  if (cleanedNodes.length < 3) {
+    state.polygonDraft = null;
+    redrawOverlay();
+    return;
+  }
+
   const newPoly = {
     id: nextPolyId(),
     floor: f,
     pseq: nextPolySeq(f), // 층별 표기 번호
     name: "",
-    nodes: [...d.nodes], // 이 폴리곤을 이루는 노드 id 리스트
+    nodes: [...cleanedNodes], // 이 폴리곤을 이루는 노드 id 리스트
   };
 
   state.graph.polygons = state.graph.polygons || [];
@@ -3036,8 +3444,10 @@ async function saveProjectToDirectory() {
   const imagesField = {}; // { "0": "images/xxx.png", ... }
   for (let i = 0; i < state.floors; i++) {
     const url = state.images[i];
-    const pill = document.getElementById("fileName_" + i);
-    const label = (pill?.textContent || "").trim();
+    const label =
+      (state.imageLabels?.[i] || "").trim() ||
+      document.getElementById("fileName_" + i)?.textContent?.trim() ||
+      "";
 
     if (!url || !label || label === "이미지 없음") {
       imagesField[i] = null;
@@ -3070,6 +3480,8 @@ async function saveProjectToDirectory() {
     scale: state.scale,
     projectName: projName,
     projectAuthor: projAuthor,
+    bgOpacity: state.bgOpacity ?? 1,
+    floorNames: sanitizeFloorNames(state.floorNames, state.floors),
   };
   json.meta = meta;
 
@@ -3098,6 +3510,9 @@ async function saveProjectToDirectory() {
 
 // reformat the data
 function serializeToDataFormat() {
+  const floorNames = sanitizeFloorNames(state.floorNames, state.floors);
+  state.floorNames = floorNames;
+
   // 0) north_reference
   const from_node = state.northRef.from_node;
   const to_node = state.northRef.to_node;
@@ -3146,6 +3561,8 @@ function serializeToDataFormat() {
     floors: state.floors,
     startFloor: state.startFloor,
     currentFloor: state.currentFloor,
+    bgOpacity: state.bgOpacity ?? 1,
+    floorNames,
     node_meta: Object.fromEntries(
       (state.graph.nodes || []).map((n) => [
         n.id,
@@ -3210,27 +3627,18 @@ async function openProjectFromDirectory() {
     const idx = Number(k);
     if (!rel || !imgDir) {
       if (state.images[idx]) {
-        try {
-          URL.revokeObjectURL(state.images[idx]);
-        } catch (_) {}
-        delete state.images[idx];
+        setFloorImage(idx, null);
       }
-      const pill = document.getElementById("fileName_" + idx);
-      if (pill) pill.textContent = "이미지 없음";
       continue;
     }
     const filename = rel.split("/").pop();
     const fh = await imgDir.getFileHandle(filename);
     const f = await fh.getFile();
     const url = URL.createObjectURL(f);
-    state.images[idx] = url;
-
-    const pill = document.getElementById("fileName_" + idx);
-    if (pill) pill.textContent = filename;
+    setFloorImage(idx, url, filename);
   }
 
   // 화면 갱신
-  buildStartFloorOptions?.(state.floors);
   renderFloor?.();
   redrawOverlay?.();
 
@@ -3245,8 +3653,6 @@ function applyFromDataFormat(json) {
   // scale
   if (typeof json.scale === "number") {
     state.scale = json.scale;
-    const scaleInput = document.getElementById("scale");
-    if (scaleInput) scaleInput.value = String(json.scale);
   }
 
   // nodes: 객체 → 배열
@@ -3356,7 +3762,9 @@ function applyFromDataFormat(json) {
         .filter(Boolean)
         .map((n) => n.id);
     }
-    nodeIds = nodeIds.filter((nid) => nodes.find((n) => n.id === nid));
+    nodeIds = normalizePolygonNodes(
+      nodeIds.filter((nid) => nodes.find((n) => n.id === nid))
+    );
 
     return {
       id,
@@ -3385,6 +3793,27 @@ function applyFromDataFormat(json) {
   if (Number.isInteger(meta.startFloor)) state.startFloor = meta.startFloor;
   if (Number.isInteger(meta.currentFloor))
     state.currentFloor = meta.currentFloor;
+  const editorFloorNames =
+    Array.isArray(meta.floorNames) && meta.floorNames.length
+      ? meta.floorNames
+      : Array.isArray(json.meta?.floorNames)
+      ? json.meta.floorNames
+      : null;
+  state.floorNames = sanitizeFloorNames(
+    editorFloorNames || state.floorNames,
+    state.floors
+  );
+  const opacitySource =
+    typeof meta.bgOpacity === "number"
+      ? meta.bgOpacity
+      : typeof json.meta?.bgOpacity === "number"
+      ? json.meta.bgOpacity
+      : null;
+  if (opacitySource != null) {
+    updateBgOpacityControls(opacitySource);
+  } else {
+    updateBgOpacityControls(state.bgOpacity ?? 1);
+  }
 
   // 4) 적용
   state.graph = { nodes, links: linksArr, polygons };
@@ -3430,6 +3859,7 @@ function applyFromDataFormat(json) {
     }
     if (arr) {
       // 파일명만 저장된 경우 /media 경로 보정
+      releaseBlobUrls(state.images);
       state.images = arr.map((v, i) => {
         if (!v) return null;
         
@@ -3459,6 +3889,9 @@ function applyFromDataFormat(json) {
         if (!state.projectId) return v;
         return `${API_ORIGIN}/media/floor_images/${state.projectId}/${i}_${v}`;
       });
+      state.imageLabels = state.images.map((url) =>
+        url ? extractFileNameFromUrl(url) : ""
+      );
     }
   }
 
@@ -3494,7 +3927,11 @@ async function saveToServer() {
         "" ||
         "",
     };
-    data.scale = Number(state.scale) || Number(els.scale?.value) || 0;
+    const floorNames = sanitizeFloorNames(state.floorNames, state.floors);
+    state.floorNames = floorNames;
+    data.meta.floorNames = floorNames;
+    data.meta.bgOpacity = state.bgOpacity ?? 1;
+    data.scale = Number(state.scale) || 0;
     data.startFloor = state.startFloor ?? 1;
 
     const saved = await apiUpdateProject(state.projectId, data);

@@ -151,6 +151,8 @@ body {
 }
 /* 그룹 내부 컨텐츠 컨테이너 */
 .group .inner {
+  display: grid;
+  gap: 10px;
   padding: 10px 12px;
 }
 
@@ -189,6 +191,30 @@ body {
 .layer-item .meta {
   font-size: 12px;
   color: var(--muted);
+}
+
+.layer-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.layer-eye {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+.layer-eye:hover {
+  opacity: 1;
+}
+
+.layer-item.is-hidden .label {
+  opacity: 0.4;
+  text-decoration: line-through;
 }
 
 
@@ -343,8 +369,8 @@ input[type="text"] {
 /* 폴리곤 클릭 영역(hitbox) 확장용 */
 .poly-hit {
   fill: transparent;
-  pointer-events: stroke;
-  stroke-width: 20;
+  pointer-events: fill;
+  stroke-width: 0;
   stroke: transparent;
 }
 
