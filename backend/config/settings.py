@@ -24,6 +24,10 @@ DEBUG = True
 # 개발용으로는 모두 허용('*'), 운영에서는 반드시 도메인만 명시해야 한다.
 ALLOWED_HOSTS = ['*']
 
+# 프록시 뒤에 있을 때 X-Forwarded-Host 헤더를 신뢰하도록 설정
+# 사설망에서 다른 컴퓨터가 접근할 때 올바른 호스트를 감지하기 위함
+USE_X_FORWARDED_HOST = True
+
 # 설치된 앱 목록
 INSTALLED_APPS = [
     # Django 기본 앱들

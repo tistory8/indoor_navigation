@@ -2560,9 +2560,24 @@ els.modalOk.addEventListener("click", async () => {
           floor,
           file,
         }).then((json) => {
-          const url = json.url?.startsWith("http")
-            ? json.url
-            : `${API_ORIGIN}${json.url}`;
+          let url = json.url;
+          if (!url) return;
+          
+          // 절대 URL인 경우
+          if (url.startsWith("http")) {
+            // 127.0.0.1이나 localhost를 포함하는 경우 API_ORIGIN으로 교체
+            if (url.includes("127.0.0.1") || url.includes("localhost")) {
+              try {
+                const urlObj = new URL(url);
+                url = `${API_ORIGIN}${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
+              } catch (e) {
+                // URL 파싱 실패 시 원본 사용
+              }
+            }
+          } else {
+            // 상대 경로인 경우
+            url = `${API_ORIGIN}${url.startsWith("/") ? url : "/" + url}`;
+          }
           state.images[floor] = url; // ← 0-기반 배열에 정확히 매핑
         });
       })
@@ -3415,11 +3430,34 @@ function applyFromDataFormat(json) {
     }
     if (arr) {
       // 파일명만 저장된 경우 /media 경로 보정
-      state.images = arr.map((v) => {
+      state.images = arr.map((v, i) => {
         if (!v) return null;
-        if (/^https?:\/\//.test(v)) return v; // 이미 절대 URL이면 그대로
+        
+        // 절대 URL인 경우
+        if (/^https?:\/\//.test(v)) {
+          // 127.0.0.1이나 localhost를 포함하는 경우 API_ORIGIN으로 교체
+          // 다른 컴퓨터에서 접속할 때 올바른 IP를 사용하도록 함
+          if (v.includes("127.0.0.1") || v.includes("localhost")) {
+            // URL에서 경로 부분만 추출하여 API_ORIGIN과 결합
+            try {
+              const url = new URL(v);
+              return `${API_ORIGIN}${url.pathname}${url.search}${url.hash}`;
+            } catch (e) {
+              // URL 파싱 실패 시 원본 반환
+              return v;
+            }
+          }
+          // 이미 올바른 호스트를 사용하는 경우 그대로 반환
+          return v;
+        }
+        
+        // 상대 경로인 경우
         if (v.startsWith("/media/")) return `${API_ORIGIN}${v}`; // /media → 백엔드 ORIGIN 붙임
-        return `${API_ORIGIN}/media/floor_images/${state.projectId}_${state.currentFloor}_${v}`;
+        
+        // 파일명만 있는 경우: 서버 저장 구조에 맞게 /media/floor_images/{projectId}/{floor}_{filename} 형태로 구성
+        // state.projectId가 없으면 경로를 구성할 수 없으므로 원본 값 반환
+        if (!state.projectId) return v;
+        return `${API_ORIGIN}/media/floor_images/${state.projectId}/${i}_${v}`;
       });
     }
   }

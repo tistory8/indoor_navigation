@@ -22,6 +22,7 @@ from copy import deepcopy
 import shutil
 
 # ----- 페이지 렌더링 -----
+@csrf_exempt
 def projects_home(request):
     """
     프로젝트 목록 페이지 뷰.
@@ -31,6 +32,7 @@ def projects_home(request):
     """
     return render(request, 'maps/index.html')
 
+@csrf_exempt
 def editor_page(request, slug: str):
     """
     에디터 페이지 뷰.
@@ -53,7 +55,7 @@ def ping(request):
 
 
 # ----- 내부 헬퍼 함수 -----
-
+@csrf_exempt
 def _normalize_data(payload: dict) -> dict:
     """
     프론트에서 전달한 payload를 저장하기 전에 정리(normalize)하는 함수.
@@ -163,11 +165,40 @@ def projects(request):
                             break
 
             # 절대 URL로 변환해서 프론트에 넘겨준다.
+            # thumb_url이 빈 문자열이면 빈 문자열 반환, 아니면 절대 URL로 변환
+            if thumb_url:
+                # 이미 절대 URL인 경우 (http:// 또는 https://로 시작)
+                if thumb_url.startswith("http://") or thumb_url.startswith("https://"):
+                    # 127.0.0.1이나 localhost를 포함하는 경우 현재 호스트로 교체
+                    if "127.0.0.1" in thumb_url or "localhost" in thumb_url:
+                        scheme = 'https' if request.is_secure() else 'http'
+                        host = request.get_host()
+                        # URL에서 경로 부분만 추출
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(thumb_url)
+                            thumbnail = f"{scheme}://{host}{parsed.path}"
+                            if parsed.query:
+                                thumbnail += f"?{parsed.query}"
+                        except Exception:
+                            # 파싱 실패 시 원본 사용
+                            thumbnail = thumb_url
+                    else:
+                        # 이미 올바른 호스트를 사용하는 경우 그대로 사용
+                        thumbnail = thumb_url
+                else:
+                    # 상대 경로인 경우 절대 URL로 변환
+                    scheme = 'https' if request.is_secure() else 'http'
+                    host = request.get_host()
+                    thumbnail = f"{scheme}://{host}{thumb_url}"
+            else:
+                thumbnail = ""
+            
             out.append({"id": p.id, 
                         "name": p.name,
                         "slug": p.slug,
                         "updated_at": p.updated_at.isoformat(),
-                        "thumbnail": request.build_absolute_uri(thumb_url),
+                    "thumbnail": thumbnail,
                         })
         
         # safe=False: 리스트 형태도 그대로 반환 가능
@@ -327,8 +358,14 @@ def upload_floor_image(request):
     saved_name = fs.save(save_name, file)
 
     # URL 구성: /media/floor_images/<project_id>/<saved_name>
+    # MEDIA_URL이 이미 /media/로 끝나므로 바로 floor_images를 붙임
     rel_url = f"{settings.MEDIA_URL}floor_images/{proj_id}/{saved_name}"
-    abs_url = request.build_absolute_uri(rel_url)
+    # 상대 경로를 절대 URL로 변환
+    # request.get_host()를 사용하여 현재 요청의 호스트를 가져옴
+    # 사설망에서 다른 컴퓨터가 접근할 때도 올바른 IP를 사용하도록 함
+    scheme = 'https' if request.is_secure() else 'http'
+    host = request.get_host()
+    abs_url = f"{scheme}://{host}{rel_url}"
 
     
     # ----- 서버의 Project.data.images에 바로 반영 -----

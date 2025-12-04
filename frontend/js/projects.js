@@ -11,6 +11,7 @@ import {
   apiCreateProject,   // 현재는 사용 안 하지만, 필요 시 목록에서 바로 생성용으로 확장 가능
   apiDeleteProject,
 } from "./api.js";
+import { API_ORIGIN } from "./api.js";
 import { gotoEditor } from "./common.js";
 
 // 자주 쓰는 DOM 요소 캐시
@@ -35,10 +36,18 @@ function cardTpl(p) {
   const name = p?.projectName || p.name || "Untitled";
   const dt = p.updated_at ? new Date(p.updated_at) : null;
   const when = dt ? `Last edited on ${dt.toDateString()}` : "";
+  
+  // 썸네일 URL이 상대 경로인 경우 절대 URL로 변환
+  let thumbUrl = thumb;
+  if (thumb && !thumb.startsWith("http://") && !thumb.startsWith("https://")) {
+    // 상대 경로인 경우 API_ORIGIN 사용
+    thumbUrl = `${API_ORIGIN}${thumb.startsWith("/") ? thumb : "/" + thumb}`;
+  }
+  
   return `
   <article class="proj-card" data-id="${p.id}">
     <div class="thumb">
-      ${thumb ? `<img src="${thumb}" alt="">` : `<div class="thumb--empty"></div>`}
+      ${thumb ? `<img src="${thumbUrl}" alt="" onerror="this.parentElement.innerHTML='<div class=\\'thumb--empty\\'></div>'">` : `<div class="thumb--empty"></div>`}
     </div>
     <h3>${name}</h3>
     <p class="muted">${when}</p>
@@ -104,9 +113,13 @@ async function refresh() {
     // 카드 HTML 합쳐서 그리드에 렌더링
     els.grid.innerHTML = list.map(cardTpl).join("");
   } catch (e) {
-    console.error(e);
+    console.error("프로젝트 목록 로드 실패:", e);
+    // 네트워크 오류인 경우 더 명확한 메시지 표시
+    const errorMsg = e.message && e.message.includes("fetch") 
+      ? "서버에 연결할 수 없습니다. 백엔드 서버가 실행 중인지 확인해주세요."
+      : "프로젝트를 불러오지 못했습니다.";
     els.grid.innerHTML =
-      `<div class="empty">프로젝트를 불러오지 못했습니다.</div>`;
+      `<div class="empty">${errorMsg}<br/><small style="color: #999;">${e.message || ""}</small></div>`;
   }
 }
 

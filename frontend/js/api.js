@@ -7,11 +7,28 @@
 
 
 // 기본 API 엔드포인트
-// window.API_BASE가 있으면 그 값을 쓰고, 없으면 로컬 개발용 기본값 사용
-export const API_BASE = window.API_BASE || "http://127.0.0.1:8000/api";
+// window.API_BASE가 있으면 그 값을 쓰고, 없으면 현재 페이지의 호스트를 기반으로 자동 생성
+// 다른 컴퓨터에서 사설 IP로 접근할 때도 동작하도록 현재 호스트 사용
+function getApiBase() {
+  if (window.API_BASE) {
+    return window.API_BASE;
+  }
+  // 현재 페이지의 호스트와 포트를 사용하여 API 주소 생성
+  // 프론트엔드가 5050 포트면 백엔드는 8000 포트로 가정
+  const currentHost = window.location.hostname;
+  const currentPort = window.location.port;
+  
+  // 프론트엔드 포트가 5050이면 백엔드는 8000으로 설정
+  // 그 외의 경우는 현재 포트를 그대로 사용하거나 8000 사용
+  const backendPort = currentPort === '5050' ? '8000' : (currentPort || '8000');
+  
+  return `http://${currentHost}:${backendPort}/api`;
+}
+
+export const API_BASE = getApiBase();
 
 // media URL 등을 만들 때 '원본 서버 주소'가 필요해서
-// "/api" 접미사를 잘라낸 값을 별도로 보관 (예: "http://127.0.0.1:8000")
+// "/api" 접미사를 잘라낸 값을 별도로 보관
 export const API_ORIGIN = API_BASE.replace(/\/api$/, "");
 
 // -----------------------------------------------------------------------------
@@ -20,7 +37,7 @@ export const API_ORIGIN = API_BASE.replace(/\/api$/, "");
 // q: 검색어 (프로젝트 이름 등 필터링에 사용)
 // -----------------------------------------------------------------------------
 async function apiListProjects(q = "") {
-  const r = await fetch(`${API_BASE}/projects/?q=${encodeURIComponent(q)}`);
+  const r = await fetch(`${API_BASE}/projects/?q=${encodeURIComponent(q)}` );
   if (!r.ok) throw new Error("list failed");
   return r.json();
 }
