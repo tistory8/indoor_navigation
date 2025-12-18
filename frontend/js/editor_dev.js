@@ -2825,6 +2825,7 @@ function applyViewTransform() {
       `${state.view.tx} ${state.view.ty} ${viewWidth} ${viewHeight}`
     );
   }
+
   const z = Math.round(scale * 100);
   document.getElementById("zoomLbl")?.replaceChildren(`🔍 ${z}%`);
 }

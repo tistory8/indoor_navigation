@@ -1051,7 +1051,7 @@ function renderFloor() {
 
   if (url) {
     // 배경 이미지 표시
-    els.bgImg.src = url;
+    els.bgImg.data = url;
     els.bgImg.style.display = "block";
 
     const labelFromState = state.imageLabels?.[f];
@@ -3755,10 +3755,16 @@ async function saveProjectToDirectory() {
     bgOpacity: state.bgOpacity ?? 1,
     floorNames: sanitizeFloorNames(state.floorNames, state.floors),
   };
+  
   json.meta = meta;
+  json.images = imagesField;
 
+  
   const exportJson = JSON.parse(JSON.stringify(json));
-  exportJson.images = imagesField;
+
+  // 내보내기에서는 불필요한 내부 메타 제거
+  delete exportJson._editor;
+  delete exportJson.meta;
 
   root.file(
     "graph.json",
