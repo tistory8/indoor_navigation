@@ -3971,12 +3971,18 @@ async function saveProjectToDirectory() {
   }
 
   const projName = getProjectName();
-  const projAuthor = document.getElementById("projectAuthor")?.value || "";
+  const projAuthorRaw =
+    (els.projAuthor?.textContent || "").replace(/^작성자:\s*/, "") ||
+    state.projectAuthor ||
+    els.projectAuthor?.value ||
+    "";
+  const projAuthor = (projAuthorRaw || "").trim();
   const zip = new JSZip();
   const root = zip.folder(projName) || zip;
   const imgFolder = root.folder("images");
 
-  const imagesField = {};
+  const exportImageMap = {};
+  const jsonImageMap = {};
 
   const fetchBinary = async (url) => {
     const res = await fetch(url);
@@ -3991,8 +3997,9 @@ async function saveProjectToDirectory() {
       document.getElementById("fileName_" + i)?.textContent?.trim() ||
       "";
 
+    jsonImageMap[i] = url || null;
     if (!url || !label || label === "이미지 없음") {
-      imagesField[i] = null;
+      exportImageMap[i] = null;
       continue;
     }
 
@@ -4004,7 +4011,7 @@ async function saveProjectToDirectory() {
 
     const data = await fetchBinary(url);
     imgFolder.file(filename, data);
-    imagesField[i] = `images/${filename}`;
+    exportImageMap[i] = `images/${filename}`;
   }
 
   const json = serializeToDataFormat();
@@ -4019,18 +4026,50 @@ async function saveProjectToDirectory() {
     floorNames: sanitizeFloorNames(state.floorNames, state.floors),
   };
   json.meta = meta;
-  json.images = imagesField;
+  json.images = jsonImageMap;
 
   const exportJson = JSON.parse(JSON.stringify(json));
+  const exportFloors = exportJson.floors
+    ? JSON.parse(JSON.stringify(exportJson.floors))
+    : {};
 
-  // 내보내기에서는 불필요한 내부 메타 제거
   delete exportJson._editor;
   delete exportJson.meta;
-  // exportJson.images = imagesField;
+  delete exportJson.images;
+  delete exportJson.floors;
 
   root.file(
     "graph.json",
     JSON.stringify(exportJson, null, 2),
+    { date: new Date() }
+  );
+
+  for (let f = 0; f < state.floors; f++) {
+    const bucket =
+      exportFloors[String(f)] || {
+        nodes: {},
+        connections: {},
+        special_points: {},
+        polygons: [],
+      };
+    const floorJson = {
+      scale: Number(state.scale) || 0,
+      north_reference: state.northRef || {},
+      nodes: bucket.nodes || {},
+      connections: bucket.connections || {},
+      special_points: bucket.special_points || {},
+      polygons: bucket.polygons || [],
+    };
+    root.file(
+      `graph_floor${f}.json`,
+      JSON.stringify(floorJson, null, 2),
+      { date: new Date() }
+    );
+  }
+
+  root.file(
+    "images_map.json",
+    JSON.stringify(exportImageMap, null, 2),
     { date: new Date() }
   );
 
@@ -4073,6 +4112,19 @@ function serializeToDataFormat() {
   const floorNames = sanitizeFloorNames(state.floorNames, state.floors);
   state.floorNames = floorNames;
 
+  const createFloorBucket = () => ({
+    nodes: {},
+    connections: {},
+    special_points: {},
+    polygons: [],
+  });
+  const floorBuckets = {};
+  const ensureFloorBucket = (idx) => {
+    const key = String(Number(idx) || 0);
+    if (!floorBuckets[key]) floorBuckets[key] = createFloorBucket();
+    return floorBuckets[key];
+  };
+
   // 0) north_reference
   const from_node = state.northRef.from_node;
   const to_node = state.northRef.to_node;
@@ -4090,6 +4142,11 @@ function serializeToDataFormat() {
     if (n.name) item.name = n.name;
     if (n.type && n.type !== "일반") item.special_id = n.type; // 맵핑 포인트
     nodesObj[n.id] = item;
+
+    const floor = Number(n.floor ?? 0);
+    const bucket = ensureFloorBucket(floor);
+    bucket.nodes[n.id] = { ...item };
+    if (item.special_id) bucket.special_points[n.id] = item.special_id;
   }
 
   // 2) connections: 링크 → 양방향 adjacency + 거리(픽셀 단위)
@@ -4100,8 +4157,17 @@ function serializeToDataFormat() {
     const B = state.graph.nodes.find((x) => x.id === l.b);
     if (!A || !B) continue;
     const d = Math.hypot(A.x - B.x, A.y - B.y); // 픽셀 거리
-    ensure(A.id)[B.id] = +d.toFixed(2);
-    ensure(B.id)[A.id] = +d.toFixed(2);
+    const dist = +d.toFixed(2);
+    ensure(A.id)[B.id] = dist;
+    ensure(B.id)[A.id] = dist;
+
+    if (Number(A.floor ?? 0) === Number(B.floor ?? 0)) {
+      const floor = Number(A.floor ?? 0);
+      const bucket = ensureFloorBucket(floor);
+      const ensureConn = (id) => (bucket.connections[id] ||= {});
+      ensureConn(A.id)[B.id] = dist;
+      ensureConn(B.id)[A.id] = dist;
+    }
   }
 
   // special_points: 노드 type 있는 것만
@@ -4116,7 +4182,25 @@ function serializeToDataFormat() {
     nodes: nodesObj,
     connections: conn,
     special_points: sp,
+    floors: {},
   };
+
+  // 층별 폴리곤 정보
+  for (const p of state.graph.polygons || []) {
+    const floor = Number(p.floor ?? 0);
+    const bucket = ensureFloorBucket(floor);
+    bucket.polygons.push({
+      id: p.id,
+      name: p.name || "",
+      nodes: Array.isArray(p.nodes) ? [...p.nodes] : [],
+      pseq: Number(p.pseq ?? 0) || 0,
+    });
+  }
+
+  for (let i = 0; i < state.floors; i++) {
+    const key = String(i);
+    out.floors[key] = floorBuckets[key] || createFloorBucket();
+  }
 
   out._editor = {
     floors: state.floors,
