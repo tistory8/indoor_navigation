@@ -3702,24 +3702,27 @@ els.btnCompassClear.addEventListener("click", () => {
 // ----------------------------------------------------
 // ------------------ save function -------------------
 async function saveProjectToDirectory() {
-  if (!window.showDirectoryPicker)
-    throw new Error("Directory picker not available");
+  if (typeof JSZip === "undefined") {
+    alert("JSZip을 불러올 수 없습니다. 네트워크 상태를 확인해 주세요.");
+    return;
+  }
 
-  // 1) 사용자에게 '기본 경로'만 고르게 함 (여기에 프로젝트 폴더를 만들 것)
-  const baseDir = await window.showDirectoryPicker({ mode: "readwrite" });
-
-  // 2) 프로젝트 이름 폴더 만들기 (이미 있으면 그대로 사용: 덮어쓰기 동작)
   const projName = getProjectName();
-  const projDir = await baseDir.getDirectoryHandle(projName, { create: true });
-  const projAuthor = document.getElementById("projectAuthor")?.value;
+  const projAuthor = document.getElementById("projectAuthor")?.value || "";
+  const zip = new JSZip();
+  const root = zip.folder(projName) || zip;
+  const imgFolder = root.folder("images");
 
-  // 3) images/ 하위 폴더 확보
-  const imgDir = await projDir.getDirectoryHandle("images", { create: true });
+  const imagesField = {};
 
-  // 4) 이미지 파일 저장 + JSON에 파일명 기록
-  const imagesField = {}; // { "0": "images/xxx.png", ... }
+  const fetchBinary = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`이미지 다운로드 실패: ${res.status}`);
+    return await res.arrayBuffer();
+  };
+
   for (let i = 0; i < state.floors; i++) {
-    const url = state.images[i];
+    const url = state.images?.[i];
     const label =
       (state.imageLabels?.[i] || "").trim() ||
       document.getElementById("fileName_" + i)?.textContent?.trim() ||
@@ -3730,24 +3733,17 @@ async function saveProjectToDirectory() {
       continue;
     }
 
-    // 확장자 추론 (기본 png)
     const ext = label.includes(".") ? label.split(".").pop() : "png";
     const safeName = sanitizeName(label) || `floor_${i + 1}.${ext}`;
     const filename = safeName.endsWith("." + ext)
       ? safeName
       : `${safeName}.${ext}`;
 
-    // ObjectURL → Blob 변환 후 저장 (동일 파일명은 덮어씀)
-    const blob = await fetch(url).then((r) => r.blob());
-    const fh = await imgDir.getFileHandle(filename, { create: true });
-    const w = await fh.createWritable();
-    await w.write(blob);
-    await w.close();
-
+    const data = await fetchBinary(url);
+    imgFolder.file(filename, data);
     imagesField[i] = `images/${filename}`;
   }
 
-  // 5) 그래프 JSON 생성 + images/meta/north_reference 포함
   const json = serializeToDataFormat();
   const meta = {
     floors: state.floors,
@@ -3761,27 +3757,47 @@ async function saveProjectToDirectory() {
   };
   json.meta = meta;
 
-  const exportJson = JSON.parse(JSON.stringify(json)); // deep copy
+  const exportJson = JSON.parse(JSON.stringify(json));
   exportJson.images = imagesField;
 
-  // 6) graph.json 저장 (프로젝트 폴더 직하)
-  const graphFh = await projDir.getFileHandle("graph.json", { create: true });
-  const gw = await graphFh.createWritable();
-  await gw.write(
-    new Blob([JSON.stringify(exportJson, null, 2)], {
-      type: "application/json",
-    })
+  root.file(
+    "graph.json",
+    JSON.stringify(exportJson, null, 2),
+    { date: new Date() }
   );
-  await gw.close();
 
-  await exportPolygonsSVG(projDir);
+  let svgCount = 0;
+  for (let f = 0; f < state.floors; f++) {
+    const svgText = buildPolygonsSVGText(f);
+    if (!svgText) continue;
+    svgCount += 1;
+    root.file(
+      `${projName}_floor${f}_polygons.svg`,
+      svgText,
+      { date: new Date() }
+    );
+  }
+
+  const zipBlob = await zip.generateAsync({ type: "blob" });
+  const url = URL.createObjectURL(zipBlob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${projName || "project"}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 2000);
+
 
   const saved = await apiUpdateProject(state.projectId, json);
   state.modified = false;
 
   els.projState.textContent = "상태: 저장됨";
   els.projState.style.color = "#27ae60";
-  els.status.textContent = `저장 완료: ${projName}/ (images + graph.json + polygons.svg)`;
+  const svgInfo = svgCount > 0 ? ` + ${svgCount} SVG` : "";
+  els.status.textContent = `ZIP 내보내기 완료: graph.json + images${svgInfo}`;
 }
 
 // reformat the data
@@ -3831,6 +3847,7 @@ function serializeToDataFormat() {
     north_reference: northObj,
     nodes: nodesObj,
     connections: conn,
+    special_points: sp,
   };
 
   out._editor = {
@@ -4336,59 +4353,37 @@ els.btnOpen.addEventListener("click", async () => {
 })();
 
 // export polygon to svg
-async function exportPolygonsSVG(projDir) {
-  const floor = currentFloor();
+function buildPolygonsSVGText(floorIndex) {
+  const floor = Number(floorIndex ?? currentFloor());
   const polys = (state.graph.polygons || []).filter(
-    (p) => Number(p.floor ?? 0) === Number(floor)
+    (p) => Number(p.floor ?? 0) === floor
   );
 
-  if (!polys.length) {
-    console.warn("현재 층에 폴리곤 없음");
-    return;
-  }
+  if (!polys.length) return null;
+  const size =
+    getFloorImageSize(floor) ||
+    (floor === currentFloor() ? getCurrentImageSize() : null) || {
+      width: 1000,
+      height: 1000,
+    };
+  const w = Math.max(1, Math.round(Number(size.width) || 1));
+  const h = Math.max(1, Math.round(Number(size.height) || 1));
 
-  // --- SVG 크기: 배경 이미지 크기 사용 ---
-  let { width: w, height: h } = getCurrentImageSize();
-  if (!w || !h) {
-    w = 1000;
-    h = 1000;
-  }
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+  ];  
 
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("xmlns", NS);
-  svg.setAttribute("width", String(w));
-  svg.setAttribute("height", String(h));
-  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-
-  // 폴리곤 렌더링
   for (const p of polys) {
     const pts = (p.nodes || []).map((nid) => getNodeById(nid)).filter(Boolean);
     if (pts.length < 3) continue;
-
-    const poly = document.createElementNS(NS, "polygon");
     const ptsAttr = pts.map((n) => `${n.x},${n.y}`).join(" ");
-    poly.setAttribute("points", ptsAttr);
-    poly.setAttribute("fill", "none");
-    poly.setAttribute("stroke", "#000");
-    poly.setAttribute("stroke-width", "1");
-    svg.appendChild(poly);
+    parts.push(
+      `<polygon points="${ptsAttr}" fill="none" stroke="#000" stroke-width="1"/>`
+    );
   }
 
-  // Blob 변환
-  const serialized = new XMLSerializer().serializeToString(svg);
-  const blob = new Blob([serialized], { type: "image/svg+xml" });
-
-  // 파일명
-  const projName = getProjectName();
-  const floorNum = String(floor);
-  const fileName = `${projName}_floor${floorNum}_polygons.svg`;
-
-  // --- 프로젝트 폴더에 저장 ---
-  const fh = await projDir.getFileHandle(fileName, { create: true });
-  const wtr = await fh.createWritable();
-  await wtr.write(blob);
-  await wtr.close();
+  parts.push("</svg>");
+  return parts.join("");
 }
 
 setTool("select");
