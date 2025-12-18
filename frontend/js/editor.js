@@ -155,8 +155,8 @@ const state = {
   // 뷰(카메라) 변환 정보 (줌/팬)
   view: {
     scale: 1,              // 확대/축소 배율
-    tx: 0,                 // x 방향 평행이동
-    ty: 0,                 // y 방향 평행이동
+    tx: 0,                 // viewBox offset X
+    ty: 0,                 // viewBox offset Y
   },
 
   // 현재 선택된 도구 (select/node/link/polygon/compass 등)
@@ -191,7 +191,10 @@ const state = {
     polygon: {},
   },
   overlayStyle: null,
+  inlineSvgMarkup: [],
 };
+
+let currentBackgroundMarkup = { floor: null, markup: null };
 
 const TOOL_KEY_MAP = {
   "1": "select",
@@ -217,6 +220,7 @@ state.history = {
 state.floorNames = sanitizeFloorNames(state.floorNames, state.floors);
 state.imageLabels = Array.from({ length: state.floors }, () => "");
 state.imageSizes = Array.from({ length: state.floors }, () => null);
+state.inlineSvgMarkup = Array.from({ length: state.floors }, () => null);
 state.bgOpacity = Math.min(1, Math.max(0, Number(state.bgOpacity) || 1));
 
 /**
@@ -432,8 +436,13 @@ const els = {
 
   // 캔버스 / 스테이지 / 배경 이미지 / 빈 상태 / 상태바
   canvas: document.getElementById("canvas"),
+  stageWrap: document.getElementById("stageWrap"),
   stage: document.getElementById("stage"),
+  stageBackground: document.getElementById("stageBackground"),
+  documentBackground: document.getElementById("documentBackground"),
+  backgroundLayer: document.getElementById("backgroundLayer"),
   bgImg: document.getElementById("bgImg"),
+  canvasFrame: document.getElementById("canvasFrame"),
   empty: document.getElementById("emptyState"),
   status: document.getElementById("status"),
   bgOpacity: document.getElementById("bgOpacity"),
@@ -562,9 +571,11 @@ function ensureImageArrays(size) {
   if (!Array.isArray(state.images)) state.images = [];
   if (!Array.isArray(state.imageLabels)) state.imageLabels = [];
   if (!Array.isArray(state.imageSizes)) state.imageSizes = [];
+  if (!Array.isArray(state.inlineSvgMarkup)) state.inlineSvgMarkup = [];
   if (state.images.length < size) state.images.length = size;
   if (state.imageLabels.length < size) state.imageLabels.length = size;
   if (state.imageSizes.length < size) state.imageSizes.length = size;
+  if (state.inlineSvgMarkup.length < size) state.inlineSvgMarkup.length = size;
 }
 
 function releaseBlobUrls(list) {
@@ -578,11 +589,36 @@ function releaseBlobUrls(list) {
   });
 }
 
+function normalizeImageSizeEntry(entry) {
+  if (!entry) return null;
+  const width = Math.max(1, Number(entry.width) || 0);
+  const height = Math.max(1, Number(entry.height) || 0);
+  if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
+}
+
 function resetImageState(count) {
   releaseBlobUrls(state.images);
   state.images = Array.from({ length: count }, () => null);
   state.imageLabels = Array.from({ length: count }, () => "");
   state.imageSizes = Array.from({ length: count }, () => null);
+  state.inlineSvgMarkup = Array.from({ length: count }, () => null);
+  currentBackgroundMarkup = { floor: null, markup: null };
+}
+
+function snapshotImageSizes(source = state.imageSizes) {
+  return (source || []).map((sz) => normalizeImageSizeEntry(sz));
+}
+
+function setInlineSvgMarkup(floor, markup) {
+  if (!Number.isInteger(floor) || floor < 0) return;
+  ensureImageArrays(Math.max(state.floors, floor + 1));
+  state.inlineSvgMarkup[floor] = markup || null;
+  if (floor === currentFloor()) {
+    renderInlineSvgBackground();
+  }
 }
 
 function setFloorImageSize(floor, size) {
@@ -599,6 +635,7 @@ function setFloorImageSize(floor, size) {
   if (floor === currentFloor()) {
     applyCurrentFloorImageSize();
   }
+  refreshInlineBackgroundForFloor(floor);
 }
 
 function getFloorImageSize(floor) {
@@ -622,21 +659,142 @@ function getCurrentImageSize() {
 }
 
 function applyCurrentFloorImageSize() {
-  const size = getCurrentImageSize();
-  const floor = currentFloor();
-  if (getFloorImageSize(floor)) {
-    if (els.bgImg) {
-      els.bgImg.style.width = `${size.width}px`;
-      els.bgImg.style.height = `${size.height}px`;
-    }
-  } else if (els.bgImg) {
+  if (els.bgImg) {
     els.bgImg.style.removeProperty("width");
     els.bgImg.style.removeProperty("height");
   }
-  if (els.stage) {
-    els.stage.style.width = `${size.width}px`;
-    els.stage.style.height = `${size.height}px`;
+  updateStageDisplaySize();
+  updateStageBackgroundGeometry();
+  renderInlineSvgBackground();
+}
+
+function computeStageDisplaySize(natSize) {
+  const size = {
+    width: Math.max(1, Number(natSize?.width) || 1),
+    height: Math.max(1, Number(natSize?.height) || 1),
+  };
+  const canvasRect = els.canvas?.getBoundingClientRect();
+  if (!canvasRect || !canvasRect.width || !canvasRect.height) return size;
+  return { width: canvasRect.width, height: canvasRect.height };
+}
+
+function updateStageDisplaySize() {
+  const natSize = getCurrentImageSize();
+  const disp = computeStageDisplaySize(natSize);
+  if (els.stageWrap) {
+    els.stageWrap.style.width = `${disp.width}px`;
+    els.stageWrap.style.height = `${disp.height}px`;
   }
+  if (els.stage) {
+    els.stage.setAttribute("width", disp.width);
+    els.stage.setAttribute("height", disp.height);
+  }
+  if (els.overlay) {
+    els.overlay.style.width = "100%";
+    els.overlay.style.height = "100%";
+  }
+}
+
+function updateStageBackgroundGeometry() {
+  const size = getCurrentImageSize();
+  if (els.stageBackground) {
+    els.stageBackground.setAttribute("x", "0");
+    els.stageBackground.setAttribute("y", "0");
+    els.stageBackground.setAttribute("width", size.width);
+    els.stageBackground.setAttribute("height", size.height);
+  }
+  if (els.documentBackground) {
+    els.documentBackground.setAttribute("x", "0");
+    els.documentBackground.setAttribute("y", "0");
+    els.documentBackground.setAttribute("width", size.width);
+    els.documentBackground.setAttribute("height", size.height);
+  }
+}
+
+function renderInlineSvgBackground() {
+  const layer = els.backgroundLayer;
+  if (!layer) return;
+  const floor = currentFloor();
+  const markup = state.inlineSvgMarkup?.[floor] || null;
+  if (markup) {
+    if (
+      currentBackgroundMarkup.floor !== floor ||
+      currentBackgroundMarkup.markup !== markup
+    ) {
+      layer.innerHTML = "";
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(markup, "image/svg+xml");
+        const hasError = doc.querySelector("parsererror");
+        const root = doc.documentElement;
+        if (!hasError && root) {
+          const frag = document.createDocumentFragment();
+          if (root.tagName?.toLowerCase() === "svg") {
+            const children = Array.from(root.childNodes || []);
+            children.forEach((child) => {
+              frag.appendChild(document.importNode(child, true));
+            });
+          } else {
+            frag.appendChild(document.importNode(root, true));
+          }
+          layer.replaceChildren(frag);
+        } else {
+          layer.innerHTML = markup;
+        }
+      } catch (err) {
+        console.warn("inline SVG parse 실패:", err);
+        layer.innerHTML = markup;
+      }
+      currentBackgroundMarkup = { floor, markup };
+    }
+    layer.style.display = "block";
+    if (els.bgImg) {
+      els.bgImg.style.display = "none";
+    }
+  } else {
+    layer.innerHTML = "";
+    layer.style.display = "none";
+    currentBackgroundMarkup = { floor: null, markup: null };
+    if (els.bgImg && state.images?.[floor]) {
+      els.bgImg.style.display = "block";
+    }
+  }
+  applyViewTransform();
+}
+
+function escapeAttributeValue(str = "") {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+}
+
+function buildRasterBackgroundSvg(url, size) {
+  const w = Math.max(1, Number(size?.width) || 1);
+  const h = Math.max(1, Number(size?.height) || 1);
+  const safeUrl = escapeAttributeValue(url || "");
+  return `
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
+  <image href="${safeUrl}" xlink:href="${safeUrl}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" />
+</svg>`;
+}
+
+function refreshInlineBackgroundForFloor(floor) {
+  const url = state.images?.[floor];
+  if (!url) {
+    setInlineSvgMarkup(floor, null);
+    return;
+  }
+  const label = state.imageLabels?.[floor] || "";
+  const looksSvg = isSvgLikeSource(label || url);
+  if (looksSvg) {
+    // SVG는 getInlineSvgMarkup 완료 시 setInlineSvgMarkup에서 렌더됨
+    return;
+  }
+  const size = getFloorImageSize(floor);
+  if (!size) return;
+  const markup = buildRasterBackgroundSvg(url, size);
+  setInlineSvgMarkup(floor, markup);
 }
 
 function isSvgLikeSource(nameOrUrl = "") {
@@ -712,6 +870,31 @@ async function extractSvgSizeFromFile(file) {
     console.warn("SVG size parse 실패:", err);
     return null;
   }
+}
+
+async function getInlineSvgMarkup({ file, url }) {
+  try {
+    if (file && isSvgFile(file)) {
+      return await file.text();
+    }
+    if (url) {
+      let fetchOpts = {};
+      try {
+        const target = new URL(url, window.location.origin);
+        if (target.origin !== window.location.origin) {
+          fetchOpts = { mode: "cors", credentials: "omit" };
+        }
+      } catch (_) {
+        fetchOpts = { mode: "cors", credentials: "omit" };
+      }
+      const res = await fetch(url, fetchOpts);
+      if (!res.ok) return null;
+      return await res.text();
+    }
+  } catch (err) {
+    console.warn("SVG markup fetch 실패:", err);
+  }
+  return null;
 }
 
 function tryCaptureSvgSizeFromImage(floor) {
@@ -814,10 +997,22 @@ function setFloorImage(floor, url, label, file) {
   state.imageLabels[floor] = text;
   const looksSvg = isSvgLikeSource(text || url || "");
   setFloorImageSize(floor, null);
+  setInlineSvgMarkup(floor, null);
   if (looksSvg && file && isSvgFile(file)) {
     extractSvgSizeFromFile(file).then((size) => {
       if (size) {
         setFloorImageSize(floor, size);
+      }
+    });
+    getInlineSvgMarkup({ file }).then((markup) => {
+      if (markup) {
+        setInlineSvgMarkup(floor, markup);
+      }
+    });
+  } else if (looksSvg && url) {
+    getInlineSvgMarkup({ url }).then((markup) => {
+      if (markup) {
+        setInlineSvgMarkup(floor, markup);
       }
     });
   }
@@ -840,6 +1035,9 @@ function updateBgOpacityControls(opacity) {
   }
   if (els.bgImg) {
     els.bgImg.style.opacity = clamped;
+  }
+  if (els.backgroundLayer) {
+    els.backgroundLayer.style.opacity = clamped;
   }
 }
 
@@ -1034,25 +1232,15 @@ function renderFloor() {
   const f = currentFloor();
   const url = state.images?.[f] || "";
   updateBgOpacityControls(state.bgOpacity ?? 1);
-  const override = getFloorImageSize(f);
-  if (override) {
-    if (els.bgImg) {
-      els.bgImg.style.width = `${override.width}px`;
-      els.bgImg.style.height = `${override.height}px`;
-    }
-    if (els.stage) {
-      els.stage.style.width = `${override.width}px`;
-      els.stage.style.height = `${override.height}px`;
-    }
-  } else {
-    els.bgImg?.style.removeProperty("width");
-    els.bgImg?.style.removeProperty("height");
-  }
 
   if (url) {
-    // 배경 이미지 표시
-    els.bgImg.data = url;
-    els.bgImg.style.display = "block";
+    // 배경 이미지 로드 (표시는 inline SVG가 담당)
+    if (els.bgImg && els.bgImg.src !== url) {
+      els.bgImg.style.display = "none";
+      els.bgImg.src = url;
+    }
+    if (els.canvasFrame) els.canvasFrame.style.display = "block";
+    renderInlineSvgBackground();
 
     const labelFromState = state.imageLabels?.[f];
     const labelFromModal =
@@ -1068,6 +1256,14 @@ function renderFloor() {
     // 배경 이미지 없음
     els.bgImg.removeAttribute("src");
     els.bgImg.style.display = "none";
+    if (els.backgroundLayer) {
+      els.backgroundLayer.innerHTML = "";
+      els.backgroundLayer.style.display = "none";
+    }
+    currentBackgroundMarkup = { floor: null, markup: null };
+    if (els.canvasFrame) {
+      els.canvasFrame.style.display = "none";
+    }
     els.bgName.textContent = "이미지 없음";
   }
 
@@ -1576,8 +1772,19 @@ function getProjectName() {
  */
 els.bgImg.addEventListener("load", () => {
   const floor = currentFloor();
+  const label = state.imageLabels?.[floor] || state.images?.[floor] || "";
+  const looksSvg = isSvgLikeSource(label);
   if (!getFloorImageSize(floor)) {
-    tryCaptureSvgSizeFromImage(floor);
+    if (looksSvg) {
+      tryCaptureSvgSizeFromImage(floor);
+    } else if (els.bgImg?.naturalWidth && els.bgImg?.naturalHeight) {
+      setFloorImageSize(floor, {
+        width: els.bgImg.naturalWidth,
+        height: els.bgImg.naturalHeight,
+      });
+    }
+  } else if (!looksSvg) {
+    refreshInlineBackgroundForFloor(floor);
   }
   applyCurrentFloorImageSize();
   applyViewTransform();
@@ -1993,27 +2200,31 @@ els.canvas.addEventListener(
   (e) => {
     // 스크롤 페이지 이동 방지
     e.preventDefault();
-    const { left, top } = els.canvas.getBoundingClientRect();
-    const mx = e.clientX - left; // 캔버스 좌표
-    const my = e.clientY - top;
-
-    const prev = { ...state.view };
+    const rectCanvas = els.canvas.getBoundingClientRect();
+    const mx = e.clientX - rectCanvas.left;
+    const my = e.clientY - rectCanvas.top;
+    const prevScale = Number(state.view?.scale) || 1;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; // 줌 스텝
-    const minScale = 0.2,
-      maxScale = 8;
+    const minScale = 0.2;
+    const maxScale = 8;
     const nextScale = Math.min(
       maxScale,
-      Math.max(minScale, prev.scale * factor)
+      Math.max(minScale, prevScale * factor)
     );
+    const rectStage = els.stage.getBoundingClientRect();
+    const relX = rectStage.width ? (e.clientX - rectStage.left) / rectStage.width : 0.5;
+    const relY = rectStage.height ? (e.clientY - rectStage.top) / rectStage.height : 0.5;
+    const size = getCurrentImageSize();
+    const prevViewWidth = size.width / prevScale;
+    const prevViewHeight = size.height / prevScale;
+    const worldX = (Number(state.view?.tx) || 0) + relX * prevViewWidth;
+    const worldY = (Number(state.view?.ty) || 0) + relY * prevViewHeight;
+    const nextViewWidth = size.width / nextScale;
+    const nextViewHeight = size.height / nextScale;
 
-    // 화면상 (mx,my)에 있는 이미지 좌표(자연 해상도 기준) 구하기
-    const imgX = (mx - prev.tx) / prev.scale;
-    const imgY = (my - prev.ty) / prev.scale;
-
-    // 같은 이미지 점이 줌 후에도 같은 화면 위치에 오도록 tx,ty 보정
     state.view.scale = nextScale;
-    state.view.tx = mx - imgX * nextScale;
-    state.view.ty = my - imgY * nextScale;
+    state.view.tx = worldX - relX * nextViewWidth;
+    state.view.ty = worldY - relY * nextViewHeight;
 
     applyViewTransform();
     redrawOverlay();
@@ -2065,7 +2276,7 @@ els.canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     isPanning = true;
     panStart = { x: e.clientX, y: e.clientY };
-    viewStart = { tx: state.view.tx, ty: state.view.ty };
+    viewStart = { tx: Number(state.view.tx) || 0, ty: Number(state.view.ty) || 0 };
     els.canvas.setPointerCapture(e.pointerId);
   }
 });
@@ -2076,8 +2287,15 @@ els.canvas.addEventListener("pointermove", (e) => {
   // 팬 중이면 마우스 이동량만큼 view.tx/ty 이동
   const dx = e.clientX - panStart.x;
   const dy = e.clientY - panStart.y;
-  state.view.tx = viewStart.tx + dx;
-  state.view.ty = viewStart.ty + dy;
+  const rectStage = els.stage.getBoundingClientRect();
+  const size = getCurrentImageSize();
+  const scale = Math.max(0.1, Number(state.view?.scale) || 1);
+  const viewWidth = size.width / scale;
+  const viewHeight = size.height / scale;
+  const ratioX = rectStage.width ? viewWidth / rectStage.width : 1;
+  const ratioY = rectStage.height ? viewHeight / rectStage.height : 1;
+  state.view.tx = viewStart.tx - dx * ratioX;
+  state.view.ty = viewStart.ty - dy * ratioY;
   applyViewTransform();
 });
 els.canvas.addEventListener("pointerup", (e) => {
@@ -2096,19 +2314,38 @@ els.canvas.addEventListener("pointerup", (e) => {
  * - state.view.scale / tx / ty 를 고려해서 역변환
  */
 function imagePointFromClient(ev) {
-  const { left, top } = els.canvas.getBoundingClientRect();
-  // const { scale, tx, ty } = state.view;
-  const view = state.view || { scale: 1, tx: 0, ty: 0 };
-  const cx = ev.clientX - left;
-  const cy = ev.clientY - top;
-  const x = (cx - view.tx) / view.scale;
-  const y = (cy - view.ty) / view.scale;
-  const { width: natW, height: natH } = getCurrentImageSize();
+  const size = getCurrentImageSize();
+  const svg = els.overlay;
+  if (svg && typeof svg.createSVGPoint === "function") {
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX;
+    pt.y = ev.clientY;
+    const ctm = svg.getScreenCTM();
+    if (ctm) {
+      const inv = ctm.inverse();
+      const svgPoint = pt.matrixTransform(inv);
+      return {
+        x: svgPoint.x,
+        y: svgPoint.y,
+        rect: { left: 0, top: 0, width: size.width, height: size.height },
+      };
+    }
+  }
 
+  const rect = svg
+    ? svg.getBoundingClientRect()
+    : els.stage.getBoundingClientRect();
+  const relX = rect.width ? (ev.clientX - rect.left) / rect.width : 0;
+  const relY = rect.height ? (ev.clientY - rect.top) / rect.height : 0;
+  const scale = Math.max(0.1, Number(state.view?.scale) || 1);
+  const viewWidth = size.width / scale;
+  const viewHeight = size.height / scale;
+  const x = (Number(state.view?.tx) || 0) + relX * viewWidth;
+  const y = (Number(state.view?.ty) || 0) + relY * viewHeight;
   return {
     x,
     y,
-    rect: { left: 0, top: 0, width: natW, height: natH },
+    rect: { left: 0, top: 0, width: size.width, height: size.height },
   };
 }
 
@@ -2140,17 +2377,22 @@ function redrawOverlay() {
   const size = getCurrentImageSize();
   const natW = size.width || 1;
   const natH = size.height || 1;
-  const overlayStyle = computeOverlayStyleBySize(size, state.view?.scale || 1);
+  const scale = Math.max(0.1, Number(state.view?.scale) || 1);
+  const viewWidth = natW / scale;
+  const viewHeight = natH / scale;
+  const tx = Number(state.view?.tx) || 0;
+  const ty = Number(state.view?.ty) || 0;
+  const overlayStyle = computeOverlayStyleBySize(size, scale);
   applyOverlayStyle(overlayStyle);
   const style = state.overlayStyle || overlayStyle;
 
-  // overlay SVG 자체의 픽셀 크기
-  svg.style.width = `${natW}px`;
-  svg.style.height = `${natH}px`;
+  // overlay SVG 자체의 표시 크기는 stage 전체를 채우도록 한다
+  svg.style.width = "100%";
+  svg.style.height = "100%";
 
   // viewBox는 SVG 내부 좌표계를 설정한다.
   // 배경 이미지의 크기와 정확히 일치하도록 세팅.  
-  svg.setAttribute("viewBox", `0 0 ${natW} ${natH}`);
+  svg.setAttribute("viewBox", `${tx} ${ty} ${viewWidth} ${viewHeight}`);
   svg.setAttribute("width", natW);
   svg.setAttribute("height", natH);
 
@@ -2570,7 +2812,11 @@ function redrawOverlay() {
   updateLayersPanel();
 }
 
-window.addEventListener("resize", redrawOverlay);
+window.addEventListener("resize", () => {
+  updateStageDisplaySize();
+  applyViewTransform();
+  redrawOverlay();
+});
 
 
 
@@ -2580,8 +2826,39 @@ window.addEventListener("resize", redrawOverlay);
  * - 상단 확대 비율 라벨도 함께 갱신
  */
 function applyViewTransform() {
-  const { scale, tx, ty } = state.view;
-  els.stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  const size = getCurrentImageSize();
+  const minScale = 0.1;
+  const scale = Math.max(minScale, Number(state.view?.scale) || 1);
+  const viewWidth = size.width / scale;
+  const viewHeight = size.height / scale;
+  const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+  let nextTx = Number(state.view?.tx) || 0;
+  let nextTy = Number(state.view?.ty) || 0;
+  if (viewWidth <= size.width) {
+    const maxX = size.width - viewWidth;
+    nextTx = clamp(nextTx, 0, maxX);
+  }
+  if (viewHeight <= size.height) {
+    const maxY = size.height - viewHeight;
+    nextTy = clamp(nextTy, 0, maxY);
+  }
+  state.view.tx = nextTx;
+  state.view.ty = nextTy;
+  if (els.overlay) {
+    els.overlay.setAttribute(
+      "viewBox",
+      `${state.view.tx} ${state.view.ty} ${viewWidth} ${viewHeight}`
+    );
+    els.overlay.setAttribute("width", size.width);
+    els.overlay.setAttribute("height", size.height);
+  }
+  if (els.stage) {
+    els.stage.setAttribute(
+      "viewBox",
+      `${state.view.tx} ${state.view.ty} ${viewWidth} ${viewHeight}`
+    );
+  }
+
   const z = Math.round(scale * 100);
   document.getElementById("zoomLbl")?.replaceChildren(`🔍 ${z}%`);
 }
@@ -3755,16 +4032,15 @@ async function saveProjectToDirectory() {
     bgOpacity: state.bgOpacity ?? 1,
     floorNames: sanitizeFloorNames(state.floorNames, state.floors),
   };
-  
   json.meta = meta;
   json.images = imagesField;
 
-  
   const exportJson = JSON.parse(JSON.stringify(json));
 
   // 내보내기에서는 불필요한 내부 메타 제거
   delete exportJson._editor;
   delete exportJson.meta;
+  // exportJson.images = imagesField;
 
   root.file(
     "graph.json",
@@ -4204,6 +4480,19 @@ function applyFromDataFormat(json) {
       state.imageLabels = state.images.map((url) =>
         url ? extractFileNameFromUrl(url) : ""
       );
+      ensureImageArrays(state.images.length);
+      state.inlineSvgMarkup = Array.from(
+        { length: state.images.length },
+        () => null
+      );
+      state.images.forEach((v, idx) => {
+        const label = state.imageLabels[idx] || "";
+        if (v && isSvgLikeSource(label || v)) {
+          getInlineSvgMarkup({ url: v }).then((markup) => {
+            if (markup) setInlineSvgMarkup(idx, markup);
+          });
+        }
+      });
       const count = Math.max(
         state.images.length,
         storedImageSizes?.length || 0
@@ -4218,6 +4507,7 @@ function applyFromDataFormat(json) {
         }
         return null;
       });
+      state.imageSizes.forEach((_, idx) => refreshInlineBackgroundForFloor(idx));
     }
   }
 
