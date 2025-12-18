@@ -204,6 +204,8 @@ const TOOL_KEY_MAP = {
   "5": "compass",
 };
 
+const PAN_SPEED = 1.5;
+
 // 마우스 화면 좌표 저장용
 state.mouse = { x: 0, y: 0 };
 
@@ -2278,8 +2280,6 @@ els.canvas.addEventListener("pointerdown", (e) => {
   }
 });
 
-const PAN_SPEED = 1.5;
-
 els.canvas.addEventListener("pointermove", (e) => {
   if (!isPanning) return;
 
@@ -2301,8 +2301,6 @@ els.canvas.addEventListener("pointerup", (e) => {
     els.canvas.releasePointerCapture(e.pointerId);
   }
 });
-
-
 
 /**
  * clientX/clientY(화면 좌표)를
@@ -2828,17 +2826,8 @@ function applyViewTransform() {
   const scale = Math.max(minScale, Number(state.view?.scale) || 1);
   const viewWidth = size.width / scale;
   const viewHeight = size.height / scale;
-  const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
-  let nextTx = Number(state.view?.tx) || 0;
-  let nextTy = Number(state.view?.ty) || 0;
-  if (viewWidth <= size.width) {
-    const maxX = size.width - viewWidth;
-    nextTx = clamp(nextTx, 0, maxX);
-  }
-  if (viewHeight <= size.height) {
-    const maxY = size.height - viewHeight;
-    nextTy = clamp(nextTy, 0, maxY);
-  }
+  let nextTx = Number.isFinite(state.view?.tx) ? Number(state.view.tx) : 0;
+  let nextTy = Number.isFinite(state.view?.ty) ? Number(state.view.ty) : 0;
   state.view.tx = nextTx;
   state.view.ty = nextTy;
   if (els.overlay) {
