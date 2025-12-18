@@ -296,6 +296,18 @@ input[type="text"] {
   left: 0;
   top: 0;
   pointer-events: auto;      /* 이쪽에서 클릭 등 이벤트 처리 */
+  --node-radius: 5px;
+  --node-selected-radius: 7px;
+  --node-selected-stroke-width: 2px;
+  --node-highlight-stroke-width: 3px;
+  --node-poly-active-stroke-width: 2.5px;
+  --poly-vertex-radius: 3px;
+  --poly-vertex-stroke-width: 2px;
+  --link-stroke-width: 2px;
+  --link-selected-stroke-width: 3px;
+  --poly-stroke-width: 2px;
+  --poly-selected-stroke-width: 2.2px;
+  --poly-preview-stroke-width: 2px;
 }
 
 /* ========= 노드 / 링크 / 폴리곤 스타일 ========= */
@@ -303,8 +315,7 @@ input[type="text"] {
 /* 선택된 노드를 강조 표시할 때 사용 (circle 요소 등) */
 .selected-node {
   stroke: #007bff;  /* 파란 테두리 */
-  stroke-width: 3px;
-  r: 7;             /* circle일 경우 반지름 */
+  stroke-width: var(--node-highlight-stroke-width, 3px);
 }
 
 /* 기본 노드 점 스타일 */
@@ -315,25 +326,25 @@ input[type="text"] {
 /* 선택된 노드 점 */
 .node-dot.selected {
   stroke: #e11d48;
-  stroke-width: 2;
+  stroke-width: var(--node-selected-stroke-width, 2px);
 }
 
 /* 폴리곤 편집 시 활성 꼭짓점 강조 */
 .node-dot.poly-vertex-active {
   stroke: #0cbd29;
-  stroke-width: 2.5px;
+  stroke-width: var(--node-poly-active-stroke-width, 2.5px);
 }
 
 /* 링크 선 기본 스타일 */
 .link-line {
   stroke: #2563eb;
-  stroke-width: 2;
+  stroke-width: var(--link-stroke-width, 2px);
 }
 
 /* 선택된 링크 선 */
 .link-line.selected {
   stroke: #e11d48;
-  stroke-width: 3;
+  stroke-width: var(--link-selected-stroke-width, 3px);
 }
 
 /* 폴리곤 채우기/테두리 기본 스타일 */
@@ -341,21 +352,21 @@ input[type="text"] {
   fill: var(--accent, #007aff);
   fill-opacity: 0.12;
   stroke: var(--accent, #007aff);
-  stroke-width: 2;
+  stroke-width: var(--poly-stroke-width, 2px);
 }
 
 /* 선택된 폴리곤: 빨간 배경으로 강조 */
 .poly-fill.selected {
   fill: rgba(255, 8, 8, 1);  /* 진한 빨간 배경 */
   stroke: #dc2626;           /* 빨간 테두리 */
-  stroke-width: 2.2;
+  stroke-width: var(--poly-selected-stroke-width, 2.2px);
 }
 
 /* 폴리곤 그리는 중, 미리보기 선(점선) */
 .poly-preview {
   fill: none;
   stroke: #007aff;
-  stroke-width: 2;
+  stroke-width: var(--poly-preview-stroke-width, 2px);
   stroke-dasharray: 6 6;
 }
 
@@ -363,7 +374,7 @@ input[type="text"] {
 .poly-vertex {
   fill: #fff;
   stroke: #007aff;
-  stroke-width: 2;
+  stroke-width: var(--poly-vertex-stroke-width, 2px);
 }
 
 /* 폴리곤 클릭 영역(hitbox) 확장용 */

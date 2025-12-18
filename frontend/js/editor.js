@@ -139,6 +139,7 @@ const state = {
   floorNames: ["1층", "2층", "3층", "4층"], // 층 표시 이름
   images: [],       // 층별 배경 이미지 URL/경로 목록 (floorIndex -> url)
   imageLabels: [],  // 층별 이미지 표시 이름
+  imageSizes: [],   // SVG viewBox 등으로 파악한 이미지 크기
   bgOpacity: 1,     // 배경 이미지 투명도 (0~1)
   currentFloor: 0,  // 현재 층 index (0-based)
   imageLocked: true, // 배경 이미지 잠금 여부
@@ -189,6 +190,7 @@ const state = {
     link: {},
     polygon: {},
   },
+  overlayStyle: null,
 };
 
 const TOOL_KEY_MAP = {
@@ -214,6 +216,7 @@ state.history = {
 
 state.floorNames = sanitizeFloorNames(state.floorNames, state.floors);
 state.imageLabels = Array.from({ length: state.floors }, () => "");
+state.imageSizes = Array.from({ length: state.floors }, () => null);
 state.bgOpacity = Math.min(1, Math.max(0, Number(state.bgOpacity) || 1));
 
 /**
@@ -558,8 +561,10 @@ function normalizeImageUrl(raw = "") {
 function ensureImageArrays(size) {
   if (!Array.isArray(state.images)) state.images = [];
   if (!Array.isArray(state.imageLabels)) state.imageLabels = [];
+  if (!Array.isArray(state.imageSizes)) state.imageSizes = [];
   if (state.images.length < size) state.images.length = size;
   if (state.imageLabels.length < size) state.imageLabels.length = size;
+  if (state.imageSizes.length < size) state.imageSizes.length = size;
 }
 
 function releaseBlobUrls(list) {
@@ -577,9 +582,220 @@ function resetImageState(count) {
   releaseBlobUrls(state.images);
   state.images = Array.from({ length: count }, () => null);
   state.imageLabels = Array.from({ length: count }, () => "");
+  state.imageSizes = Array.from({ length: count }, () => null);
 }
 
-function setFloorImage(floor, url, label) {
+function setFloorImageSize(floor, size) {
+  if (!Number.isInteger(floor) || floor < 0) return;
+  ensureImageArrays(Math.max(state.floors, floor + 1));
+  if (size && size.width && size.height) {
+    state.imageSizes[floor] = {
+      width: Math.max(1, Number(size.width) || 1),
+      height: Math.max(1, Number(size.height) || 1),
+    };
+  } else {
+    state.imageSizes[floor] = null;
+  }
+  if (floor === currentFloor()) {
+    applyCurrentFloorImageSize();
+  }
+}
+
+function getFloorImageSize(floor) {
+  const arr = state.imageSizes || [];
+  const raw = arr?.[floor];
+  if (!raw) return null;
+  const w = Number(raw.width) || 0;
+  const h = Number(raw.height) || 0;
+  if (w > 0 && h > 0) return { width: w, height: h };
+  return null;
+}
+
+function getCurrentImageSize() {
+  const floor = currentFloor();
+  const override = getFloorImageSize(floor);
+  if (override) return override;
+  return {
+    width: Math.max(1, els.bgImg?.naturalWidth || els.bgImg?.width || 1),
+    height: Math.max(1, els.bgImg?.naturalHeight || els.bgImg?.height || 1),
+  };
+}
+
+function applyCurrentFloorImageSize() {
+  const size = getCurrentImageSize();
+  const floor = currentFloor();
+  if (getFloorImageSize(floor)) {
+    if (els.bgImg) {
+      els.bgImg.style.width = `${size.width}px`;
+      els.bgImg.style.height = `${size.height}px`;
+    }
+  } else if (els.bgImg) {
+    els.bgImg.style.removeProperty("width");
+    els.bgImg.style.removeProperty("height");
+  }
+  if (els.stage) {
+    els.stage.style.width = `${size.width}px`;
+    els.stage.style.height = `${size.height}px`;
+  }
+}
+
+function isSvgLikeSource(nameOrUrl = "") {
+  if (!nameOrUrl) return false;
+  return /\.svg(\?|#|$)/i.test(nameOrUrl.trim());
+}
+
+function isSvgFile(file) {
+  if (!file) return false;
+  if (file.type) return file.type === "image/svg+xml";
+  return isSvgLikeSource(file.name || "");
+}
+
+function parseSvgLength(value) {
+  if (!value) return null;
+  const match = /^(-?\d+(\.\d+)?)([a-z%]*)$/i.exec(value.trim());
+  if (!match) return null;
+  const num = parseFloat(match[1]);
+  if (!Number.isFinite(num)) return null;
+  const unit = (match[3] || "px").toLowerCase();
+  switch (unit) {
+    case "px":
+    case "":
+      return num;
+    case "pt":
+      return num * (96 / 72);
+    case "pc":
+      return num * 16;
+    case "in":
+      return num * 96;
+    case "cm":
+      return num * (96 / 2.54);
+    case "mm":
+      return num * (96 / 25.4);
+    default:
+      return null;
+  }
+}
+
+function parseSvgSizeFromElement(svg) {
+  if (!svg) return null;
+  let width = parseSvgLength(svg.getAttribute("width"));
+  let height = parseSvgLength(svg.getAttribute("height"));
+  const viewBoxAttr = svg.getAttribute("viewBox");
+  if ((!width || !height) && viewBoxAttr) {
+    const parts = viewBoxAttr
+      .trim()
+      .split(/[\s,]+/)
+      .map((v) => Number(v));
+    if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+      width = width || parts[2];
+      height = height || parts[3];
+    }
+  }
+  const vb = svg.viewBox?.baseVal;
+  if ((!width || !height) && vb) {
+    width = width || vb.width || null;
+    height = height || vb.height || null;
+  }
+  if (width && height) return { width, height };
+  return null;
+}
+
+async function extractSvgSizeFromFile(file) {
+  if (!isSvgFile(file)) return null;
+  try {
+    const text = await file.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, "image/svg+xml");
+    if (!doc || doc.getElementsByTagName("parsererror").length) return null;
+    return parseSvgSizeFromElement(doc.documentElement);
+  } catch (err) {
+    console.warn("SVG size parse 실패:", err);
+    return null;
+  }
+}
+
+function tryCaptureSvgSizeFromImage(floor) {
+  if (!els.bgImg) return;
+  const label = state.imageLabels?.[floor] || state.images?.[floor] || "";
+  if (!isSvgLikeSource(label)) return;
+  try {
+    const doc =
+      typeof els.bgImg.getSVGDocument === "function"
+        ? els.bgImg.getSVGDocument()
+        : els.bgImg.contentDocument;
+    if (!doc) return;
+    const size = parseSvgSizeFromElement(doc.documentElement);
+    if (size) {
+      setFloorImageSize(floor, size);
+    }
+  } catch (err) {
+    console.warn("현재 이미지에서 SVG 크기 추출 실패:", err);
+  }
+}
+
+function computeOverlayStyleBySize(size, viewScale = 1) {
+  const base = Math.max(
+    1,
+    Math.max(Number(size?.width) || 1, Number(size?.height) || 1)
+  );
+  const zoom = Math.max(0.2, Math.min(5, Number(viewScale) || 1));
+  const ratio = (base / 1000) * zoom;
+  const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+  const nodeRadius = clamp(5 * ratio, 2, 9);
+  const nodeSelectedRadius = clamp(nodeRadius + 2 * ratio, nodeRadius + 1, nodeRadius + 5);
+  const nodeSelectedStroke = clamp(2 * ratio, 1, 4);
+  const nodeHighlightStroke = clamp(3 * ratio, 1.2, 5);
+  const nodePolyStroke = clamp(2.5 * ratio, 1.2, 4);
+  const polyVertexRadius = clamp(nodeRadius * 0.6, 1.5, 5);
+  const polyVertexStroke = clamp(2 * ratio, 1, 4);
+  const linkStroke = clamp(2 * ratio, 1, 5);
+  const linkSelectedStroke = clamp(linkStroke + ratio, linkStroke + 0.5, 6);
+  const polyStroke = clamp(2 * ratio, 1, 5);
+  const polySelectedStroke = clamp(polyStroke + 0.6 * ratio, polyStroke + 0.3, 6);
+  const previewStroke = clamp(2 * ratio, 1, 4);
+  const snapDotRadius = clamp(3 * ratio, 1.5, 4);
+  const guideStroke = clamp(1.4 * ratio, 0.8, 3);
+  return {
+    nodeRadius,
+    nodeSelectedRadius,
+    nodeSelectedStroke,
+    nodeHighlightStroke,
+    nodePolyStroke,
+    polyVertexRadius,
+    polyVertexStroke,
+    linkStroke,
+    linkSelectedStroke,
+    polyStroke,
+    polySelectedStroke,
+    previewStroke,
+    snapDotRadius,
+    guideStroke,
+  };
+}
+
+function applyOverlayStyle(style) {
+  if (!style) return;
+  state.overlayStyle = style;
+  const svg = els.overlay;
+  if (!svg) return;
+  const set = (name, value) => {
+    if (value != null) svg.style.setProperty(name, `${value}px`);
+  };
+  set("--node-radius", style.nodeRadius);
+  set("--node-selected-radius", style.nodeSelectedRadius);
+  set("--node-selected-stroke-width", style.nodeSelectedStroke);
+  set("--node-highlight-stroke-width", style.nodeHighlightStroke);
+  set("--node-poly-active-stroke-width", style.nodePolyStroke);
+  set("--poly-vertex-radius", style.polyVertexRadius);
+  set("--poly-vertex-stroke-width", style.polyVertexStroke);
+  set("--link-stroke-width", style.linkStroke);
+  set("--link-selected-stroke-width", style.linkSelectedStroke);
+  set("--poly-stroke-width", style.polyStroke);
+  set("--poly-selected-stroke-width", style.polySelectedStroke);
+  set("--poly-preview-stroke-width", style.previewStroke);
+}
+
+function setFloorImage(floor, url, label, file) {
   if (!Number.isInteger(floor) || floor < 0) return;
   ensureImageArrays(Math.max(state.floors, floor + 1));
   const prevUrl = state.images[floor];
@@ -596,6 +812,15 @@ function setFloorImage(floor, url, label) {
       ? extractFileNameFromUrl(url)
       : "";
   state.imageLabels[floor] = text;
+  const looksSvg = isSvgLikeSource(text || url || "");
+  setFloorImageSize(floor, null);
+  if (looksSvg && file && isSvgFile(file)) {
+    extractSvgSizeFromFile(file).then((size) => {
+      if (size) {
+        setFloorImageSize(floor, size);
+      }
+    });
+  }
   const pill = document.getElementById("fileName_" + floor);
   if (pill) pill.textContent = url ? text || "이미지" : "이미지 없음";
   if (state.loaded && floor === currentFloor()) {
@@ -783,7 +1008,7 @@ function buildFloorFileRows(preserveNames = true) {
       const file = input.files?.[0];
       if (file) {
         const url = URL.createObjectURL(file);
-        setFloorImage(i, url, file.name);
+        setFloorImage(i, url, file.name, file);
       }
     };
 
@@ -809,6 +1034,20 @@ function renderFloor() {
   const f = currentFloor();
   const url = state.images?.[f] || "";
   updateBgOpacityControls(state.bgOpacity ?? 1);
+  const override = getFloorImageSize(f);
+  if (override) {
+    if (els.bgImg) {
+      els.bgImg.style.width = `${override.width}px`;
+      els.bgImg.style.height = `${override.height}px`;
+    }
+    if (els.stage) {
+      els.stage.style.width = `${override.width}px`;
+      els.stage.style.height = `${override.height}px`;
+    }
+  } else {
+    els.bgImg?.style.removeProperty("width");
+    els.bgImg?.style.removeProperty("height");
+  }
 
   if (url) {
     // 배경 이미지 표시
@@ -837,6 +1076,7 @@ function renderFloor() {
 
   // 선택 라벨 초기화
   els.selLbl.textContent = " ";
+  applyCurrentFloorImageSize();
 }
 
 
@@ -1335,13 +1575,11 @@ function getProjectName() {
  * - 현재 view transform을 적용하고 overlay 다시 그림
  */
 els.bgImg.addEventListener("load", () => {
-  const natW = els.bgImg.naturalWidth || 1;
-  const natH = els.bgImg.naturalHeight || 1;
-
-  // stage/overlay를 자연 해상도 기준으로 맞추기
-  els.stage.style.width = `${natW}px`;
-  els.stage.style.height = `${natH}px`;
-
+  const floor = currentFloor();
+  if (!getFloorImageSize(floor)) {
+    tryCaptureSvgSizeFromImage(floor);
+  }
+  applyCurrentFloorImageSize();
   applyViewTransform();
   redrawOverlay();
 });
@@ -1543,17 +1781,17 @@ function drawSnapGuides(svg) {
   g.setAttribute("id", "snap-guides");
   g.setAttribute("pointer-events", "none");
 
-  // SVG 전체 크기 계산 (imageSize 있으면 우선 사용)
-  const W =
-    state.imageSize?.width ?? svg.viewBox.baseVal.width ?? svg.clientWidth;
-  const H =
-    state.imageSize?.height ?? svg.viewBox.baseVal.height ?? svg.clientHeight;
+  // SVG 전체 크기 계산
+  const { width: W, height: H } = getCurrentImageSize();
 
   // 공통 스타일의 line 생성 헬퍼
   const mkLine = () => {
     const ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
     ln.setAttribute("stroke", "#FF3B30"); // 보기 쉬운 빨강
-    ln.setAttribute("stroke-width", "1.5");
+    ln.setAttribute(
+      "stroke-width",
+      String(state.overlayStyle?.guideStroke ?? 1.5)
+    );
     ln.setAttribute("stroke-dasharray", "6 6");
     ln.setAttribute("pointer-events", "none");
     return ln;
@@ -1587,7 +1825,7 @@ function drawSnapGuides(svg) {
     );
     dot.setAttribute("cx", cx);
     dot.setAttribute("cy", cy);
-    dot.setAttribute("r", 3);
+    dot.setAttribute("r", String(state.overlayStyle?.snapDotRadius ?? 3));
     dot.setAttribute("fill", "#FF3B30");
     dot.setAttribute("pointer-events", "none");
     return dot;
@@ -1717,6 +1955,16 @@ window.addEventListener("keyup", (e) => {
   }
 });
 
+// 창 포커스가 다른 탭/앱으로 넘어갔다가 돌아올 때
+window.addEventListener("blur", () => {
+  state.keys.shift = false;
+  state.keys.alt = false;
+  spaceHeld = false;
+  state.snap.cand = { v: null, h: null };
+  state.snapGuide = null;
+  redrawOverlay();
+});
+
 /**
  * 창을 닫기 전에 "저장 안 된 변경사항"이 있으면 경고창 표시
  * - state.loaded: 프로젝트가 실제로 열려 있는지
@@ -1768,6 +2016,7 @@ els.canvas.addEventListener(
     state.view.ty = my - imgY * nextScale;
 
     applyViewTransform();
+    redrawOverlay();
   },
   { passive: false }
 );
@@ -1854,8 +2103,7 @@ function imagePointFromClient(ev) {
   const cy = ev.clientY - top;
   const x = (cx - view.tx) / view.scale;
   const y = (cy - view.ty) / view.scale;
-  const natW = els.bgImg.naturalWidth || els.bgImg.width || 0;
-  const natH = els.bgImg.naturalHeight || els.bgImg.height || 0;
+  const { width: natW, height: natH } = getCurrentImageSize();
 
   return {
     x,
@@ -1889,8 +2137,12 @@ function redrawOverlay() {
   // -------------------------------------------------------------------------
   // 1) 배경 이미지 크기에 맞춰 overlay SVG 기본 속성 조정
   // -------------------------------------------------------------------------  
-  const natW = els.bgImg.naturalWidth || els.bgImg.width || 1;
-  const natH = els.bgImg.naturalHeight || els.bgImg.height || 1;
+  const size = getCurrentImageSize();
+  const natW = size.width || 1;
+  const natH = size.height || 1;
+  const overlayStyle = computeOverlayStyleBySize(size, state.view?.scale || 1);
+  applyOverlayStyle(overlayStyle);
+  const style = state.overlayStyle || overlayStyle;
 
   // overlay SVG 자체의 픽셀 크기
   svg.style.width = `${natW}px`;
@@ -1942,10 +2194,12 @@ function redrawOverlay() {
     );
     poly.setAttribute("points", pointsAttr);
     poly.setAttribute("class", "poly-fill");
+    poly.setAttribute("stroke-width", String(style.polyStroke || 2));
 
     // 현재 선택된 폴리곤이면 CSS로 하이라이트
     if (state.selection?.type === "polygon" && state.selection.id === p.id) {
       poly.classList.add("selected");
+      poly.setAttribute("stroke-width", String(style.polySelectedStroke || 2));
     }
 
     const hit = document.createElementNS(
@@ -2010,6 +2264,7 @@ function redrawOverlay() {
       );
       path.setAttribute("points", pts.map((pt) => `${pt.x},${pt.y}`).join(" "));
       path.setAttribute("class", "poly-preview");
+      path.setAttribute("stroke-width", String(style.previewStroke || 2));
       svg.appendChild(path);
 
       // 이미 찍힌 정점 위치에 작은 점(circle)들도 같이 그림
@@ -2020,7 +2275,7 @@ function redrawOverlay() {
         );
         c.setAttribute("cx", pt.x);
         c.setAttribute("cy", pt.y);
-        c.setAttribute("r", 3);
+        c.setAttribute("r", String(style.polyVertexRadius || 3));
         c.setAttribute("class", "poly-vertex");
         svg.appendChild(c);
       }
@@ -2073,11 +2328,13 @@ function redrawOverlay() {
     vis.setAttribute("y1", a.y);
     vis.setAttribute("x2", b.x);
     vis.setAttribute("y2", b.y);
+    vis.setAttribute("stroke-width", String(style.linkStroke || 2));
     vis.dataset.id = lk.id;
 
     // 현재 선택된 링크면 CSS로 하이라이트
     if (state.selection?.type === "link" && state.selection.id === lk.id) {
       vis.classList.add("selected");
+      vis.setAttribute("stroke-width", String(style.linkSelectedStroke || 3));
     }
 
     g.appendChild(hit);
@@ -2095,7 +2352,7 @@ function redrawOverlay() {
     const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     c.setAttribute("cx", n.x);
     c.setAttribute("cy", n.y);
-    c.setAttribute("r", 5);
+    c.setAttribute("r", String(style.nodeRadius || 5));
 
     // (1) 선택 도구에서 선택된 노드인지
     const isSelectedNode =
@@ -2122,18 +2379,36 @@ function redrawOverlay() {
     // ---------- 클래스 적용 ----------
     c.classList.add("node-dot");
 
+    let nodeRadius = style.nodeRadius || 5;
+    let strokeWidthOverride = null;
+
     // (1) 일반 선택 노드: 기존 빨간 테두리
     if (isSelectedNode) {
       c.classList.add("selected");
+      nodeRadius = style.nodeSelectedRadius || nodeRadius + 2;
+      strokeWidthOverride = style.nodeSelectedStroke || 2;
     }
     // (2) 폴리곤 정점으로 포함된 노드: 파란 점 + 빨간 외곽선 느낌
     else if (isPolyVertex) {
       c.classList.add("poly-vertex-active"); // ← css 에서 stroke 빨간색
+      strokeWidthOverride = style.nodePolyStroke || 2.5;
     }
 
     // (3) 링크 from / 나침반 선택 노드는 보조 하이라이트
     if (isLinkPending || isCompassPicked) {
       c.classList.add("selected-node");
+      nodeRadius = Math.max(nodeRadius, style.nodeSelectedRadius || nodeRadius);
+      strokeWidthOverride = Math.max(
+        strokeWidthOverride ?? 0,
+        style.nodeHighlightStroke || 3
+      );
+    }
+
+    c.setAttribute("r", String(nodeRadius));
+    if (strokeWidthOverride != null) {
+      c.setAttribute("stroke-width", String(strokeWidthOverride));
+    } else {
+      c.removeAttribute("stroke-width");
     }
 
     c.dataset.id = n.id;
@@ -2271,6 +2546,7 @@ function redrawOverlay() {
       pl.setAttribute("x2", px);
       pl.setAttribute("y2", py);
       pl.classList.add("preview-line");
+      pl.setAttribute("stroke-width", String(style.previewStroke || 2));
       svg.appendChild(pl);
     }
   }
@@ -2895,7 +3171,7 @@ els.modalOk.addEventListener("click", async () => {
           if (!json?.url) return;
           const abs = normalizeImageUrl(json.url);
           const fileName = file?.name || state.imageLabels?.[floor] || "";
-          setFloorImage(floor, abs, fileName);
+          setFloorImage(floor, abs, fileName, file);
         });
       })
     );
@@ -2943,7 +3219,7 @@ els.btnLoadBg.addEventListener("click", () => {
     const prevUrl = state.images?.[floor] || null;
     const prevLabel = state.imageLabels?.[floor] || "";
     const tempUrl = URL.createObjectURL(file);
-    setFloorImage(floor, tempUrl, file.name);
+    setFloorImage(floor, tempUrl, file.name, file);
     els.status.textContent = "배경 이미지 업로드 중...";
     try {
       const json = await apiUploadFloorImage({
@@ -2953,7 +3229,7 @@ els.btnLoadBg.addEventListener("click", () => {
       });
       if (!json?.url) throw new Error("no url");
       const normalized = normalizeImageUrl(json.url);
-      setFloorImage(floor, normalized, file.name);
+      setFloorImage(floor, normalized, file.name, file);
       els.status.textContent = `${getFloorName(floor)} 이미지 업로드 완료`;
       showToast("배경 이미지가 저장되었습니다.");
     } catch (err) {
@@ -3563,6 +3839,13 @@ function serializeToDataFormat() {
     currentFloor: state.currentFloor,
     bgOpacity: state.bgOpacity ?? 1,
     floorNames,
+    imageSizes: (state.imageSizes || []).map((sz) => {
+      if (!sz || !sz.width || !sz.height) return null;
+      return {
+        width: Number(sz.width) || 0,
+        height: Number(sz.height) || 0,
+      };
+    }),
     node_meta: Object.fromEntries(
       (state.graph.nodes || []).map((n) => [
         n.id,
@@ -3635,7 +3918,7 @@ async function openProjectFromDirectory() {
     const fh = await imgDir.getFileHandle(filename);
     const f = await fh.getFile();
     const url = URL.createObjectURL(f);
-    setFloorImage(idx, url, filename);
+    setFloorImage(idx, url, filename, f);
   }
 
   // 화면 갱신
@@ -3799,6 +4082,12 @@ function applyFromDataFormat(json) {
       : Array.isArray(json.meta?.floorNames)
       ? json.meta.floorNames
       : null;
+  const storedImageSizes =
+    Array.isArray(meta.imageSizes) && meta.imageSizes.length
+      ? meta.imageSizes
+      : Array.isArray(json.meta?.imageSizes) && json.meta.imageSizes.length
+      ? json.meta.imageSizes
+      : null;
   state.floorNames = sanitizeFloorNames(
     editorFloorNames || state.floorNames,
     state.floors
@@ -3892,6 +4181,20 @@ function applyFromDataFormat(json) {
       state.imageLabels = state.images.map((url) =>
         url ? extractFileNameFromUrl(url) : ""
       );
+      const count = Math.max(
+        state.images.length,
+        storedImageSizes?.length || 0
+      );
+      state.imageSizes = Array.from({ length: count }, (_, idx) => {
+        const sz = storedImageSizes?.[idx];
+        if (sz && Number(sz.width) > 0 && Number(sz.height) > 0) {
+          return {
+            width: Number(sz.width) || 0,
+            height: Number(sz.height) || 0,
+          };
+        }
+        return null;
+      });
     }
   }
 
@@ -4045,12 +4348,10 @@ async function exportPolygonsSVG(projDir) {
   }
 
   // --- SVG 크기: 배경 이미지 크기 사용 ---
-  let w = 1000;
-  let h = 1000;
-  const img = els.bgImg || document.getElementById("bgImage") || null;
-  if (img && img.naturalWidth) {
-    w = img.naturalWidth;
-    h = img.naturalHeight;
+  let { width: w, height: h } = getCurrentImageSize();
+  if (!w || !h) {
+    w = 1000;
+    h = 1000;
   }
 
   const NS = "http://www.w3.org/2000/svg";
