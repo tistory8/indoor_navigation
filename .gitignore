@@ -1,0 +1,16 @@
+*_ori*
+
+# Django media uploads live inside backend/media
+backend/media/
+
+# Ignore migration folders no matter where they live under backend
+backend/**/migrations/
+
+backend/**/__pycache__/
+
+# SQLite databases generated during local development
+*.sqlite3
+
+# Bytecode caches
+__pycache__/
+*.py[cod]
