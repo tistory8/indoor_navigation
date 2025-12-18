@@ -2200,9 +2200,6 @@ els.canvas.addEventListener(
   (e) => {
     // 스크롤 페이지 이동 방지
     e.preventDefault();
-    const rectCanvas = els.canvas.getBoundingClientRect();
-    const mx = e.clientX - rectCanvas.left;
-    const my = e.clientY - rectCanvas.top;
     const prevScale = Number(state.view?.scale) || 1;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12; // 줌 스텝
     const minScale = 0.2;
@@ -2281,6 +2278,8 @@ els.canvas.addEventListener("pointerdown", (e) => {
   }
 });
 
+const PAN_SPEED = 1.5;
+
 els.canvas.addEventListener("pointermove", (e) => {
   if (!isPanning) return;
 
@@ -2291,11 +2290,9 @@ els.canvas.addEventListener("pointermove", (e) => {
   const size = getCurrentImageSize();
   const scale = Math.max(0.1, Number(state.view?.scale) || 1);
   const viewWidth = size.width / scale;
-  const viewHeight = size.height / scale;
-  const ratioX = rectStage.width ? viewWidth / rectStage.width : 1;
-  const ratioY = rectStage.height ? viewHeight / rectStage.height : 1;
-  state.view.tx = viewStart.tx - dx * ratioX;
-  state.view.ty = viewStart.ty - dy * ratioY;
+  const pxToWorld = rectStage.width ? viewWidth / rectStage.width : 1;
+  state.view.tx = viewStart.tx - dx * pxToWorld * PAN_SPEED;
+  state.view.ty = viewStart.ty - dy * pxToWorld * PAN_SPEED;
   applyViewTransform();
 });
 els.canvas.addEventListener("pointerup", (e) => {
